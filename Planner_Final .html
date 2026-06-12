@@ -1,0 +1,4635 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Medical Study Hub v4 — Dr. Mohammad Hossein Hemmati</title>
+  <script>
+    /* ===== INLINE MINI-CHART (No Internet Needed) ===== */
+    class Chart {
+      constructor(ctx, config) {
+        this.ctx = ctx;
+        this.canvas = ctx.canvas;
+        this.config = config;
+        this._ro = null;
+        this._draw();
+        if (typeof ResizeObserver !== 'undefined') {
+          this._ro = new ResizeObserver(() => { clearTimeout(this._rt); this._rt = setTimeout(() => this._draw(), 60); });
+          if (this.canvas.parentElement) this._ro.observe(this.canvas.parentElement);
+        }
+      }
+      destroy() {
+        if (this._ro) this._ro.disconnect();
+        clearTimeout(this._rt);
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      }
+      resize() { this._draw(); }
+      _dim() {
+        const p = this.canvas.parentElement;
+        return { W: p ? p.clientWidth || 300 : 300, H: p ? p.clientHeight || 200 : 200 };
+      }
+      _draw() {
+        const { W, H } = this._dim();
+        this.canvas.width = W * (window.devicePixelRatio || 1);
+        this.canvas.height = H * (window.devicePixelRatio || 1);
+        this.canvas.style.width = W + 'px';
+        this.canvas.style.height = H + 'px';
+        this.ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+        const t = this.config.type;
+        if (t === 'bar') this._bar(W, H);
+        else if (t === 'pie' || t === 'doughnut') this._pie(W, H);
+        else if (t === 'line') this._line(W, H);
+      }
+      _bar(W, H) {
+        const ctx = this.ctx, { data, options = {} } = this.config;
+        const labels = data.labels || [], ds = data.datasets || [];
+        if (!ds.length) return;
+        ctx.clearRect(0, 0, W, H);
+        const pad = { top: 24, right: 16, bottom: 54, left: 46 };
+        const cW = W - pad.left - pad.right, cH = H - pad.top - pad.bottom;
+        const allVals = ds.flatMap(d => d.data || []);
+        const rawMax = allVals.length ? Math.max(...allVals) : 0;
+        const maxV = options.scales?.y?.max != null ? options.scales.y.max : (rawMax > 0 ? rawMax * 1.15 : 10);
+        const minV = options.scales?.y?.beginAtZero !== false ? 0 : Math.min(...allVals);
+        const range = maxV - minV || 1;
+        // gridlines
+        ctx.strokeStyle = '#e8e8e8'; ctx.lineWidth = 1;
+        for (let i = 0; i <= 5; i++) {
+          const y = pad.top + cH - (i / 5) * cH;
+          ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + cW, y); ctx.stroke();
+          ctx.fillStyle = '#888'; ctx.font = `${Math.max(10, Math.min(12, W / 30))}px sans-serif`;
+          ctx.textAlign = 'right';
+          ctx.fillText(Math.round(minV + range * i / 5), pad.left - 5, y + 4);
+        }
+        // bars
+        const bW = cW / labels.length;
+        const bPad = bW * 0.18;
+        ds.forEach(dataset => {
+          dataset.data.forEach((v, i) => {
+            const h = ((v - minV) / range) * cH;
+            const x = pad.left + i * bW + bPad, y = pad.top + cH - h, bw = bW - bPad * 2;
+            ctx.fillStyle = Array.isArray(dataset.backgroundColor) ? dataset.backgroundColor[i] : (dataset.backgroundColor || '#667eea');
+            const r = Math.min(dataset.borderRadius || 0, bw / 2, Math.max(h, 1));
+            if (r > 0 && h > 0) {
+              ctx.beginPath(); ctx.moveTo(x + r, y); ctx.lineTo(x + bw - r, y);
+              ctx.quadraticCurveTo(x + bw, y, x + bw, y + r);
+              ctx.lineTo(x + bw, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + r);
+              ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath(); ctx.fill();
+            } else if (h > 0) { ctx.fillRect(x, y, bw, h); }
+            if (dataset.borderWidth && h > 0) {
+              ctx.strokeStyle = Array.isArray(dataset.borderColor) ? dataset.borderColor[i] : (dataset.borderColor || '#333');
+              ctx.lineWidth = dataset.borderWidth;
+              ctx.strokeRect(x, y, bw, h);
+            }
+            if (v > 0) {
+              ctx.fillStyle = '#444'; ctx.font = `bold ${Math.max(9, Math.min(11, W / 35))}px sans-serif`;
+              ctx.textAlign = 'center'; ctx.fillText(v, x + bw / 2, y - 4);
+            }
+          });
+        });
+        // x labels
+        const fs = Math.max(9, Math.min(11, W / 40));
+        ctx.fillStyle = '#1a3b5d'; ctx.font = `${fs}px sans-serif`; ctx.textAlign = 'center';
+        labels.forEach((lbl, i) => {
+          const x = pad.left + i * bW + bW / 2;
+          let txt = String(lbl);
+          const maxW = bW - 4;
+          while (txt.length > 3 && ctx.measureText(txt).width > maxW) txt = txt.slice(0, -1);
+          if (txt !== String(lbl)) txt += '…';
+          ctx.fillText(txt, x, pad.top + cH + 16);
+        });
+        // axes
+        ctx.strokeStyle = '#d0d0d0'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, pad.top + cH); ctx.lineTo(pad.left + cW, pad.top + cH); ctx.stroke();
+      }
+      _pie(W, H) {
+        const ctx = this.ctx, { data, options = {} } = this.config;
+        const ds = (data.datasets || [])[0]; if (!ds) return;
+        const vals = ds.data || [], colors = ds.backgroundColor || [], labels = data.labels || [];
+        const total = vals.reduce((a, b) => a + b, 0); if (!total) return;
+        ctx.clearRect(0, 0, W, H);
+        const legItems = labels.map((l, i) => ({ label: l, color: colors[i] || '#ccc' }));
+        const cols = Math.min(3, legItems.length);
+        const legRows = Math.ceil(legItems.length / cols);
+        const legH = legRows * 22 + 12;
+        const cx = W / 2, chartH = H - legH, cy = chartH / 2;
+        const r = Math.min(cx - 4, chartH / 2 - 4);
+        let angle = -Math.PI / 2;
+        vals.forEach((v, i) => {
+          const sweep = (v / total) * 2 * Math.PI;
+          ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, angle, angle + sweep); ctx.closePath();
+          ctx.fillStyle = colors[i] || '#ccc'; ctx.fill();
+          if (ds.borderWidth) { ctx.strokeStyle = ds.borderColor || 'white'; ctx.lineWidth = ds.borderWidth; ctx.stroke(); }
+          angle += sweep;
+        });
+        // legend bottom
+        const itemW = W / cols;
+        const fs = Math.max(9, Math.min(11, W / 35));
+        ctx.font = `${fs}px sans-serif`;
+        legItems.forEach((item, i) => {
+          const col = i % cols, row = Math.floor(i / cols);
+          const lx = col * itemW + 8, ly = chartH + row * 22 + 16;
+          ctx.fillStyle = item.color; ctx.fillRect(lx, ly - 10, 12, 12);
+          ctx.fillStyle = '#333'; ctx.textAlign = 'left';
+          let txt = item.label;
+          const maxW = itemW - 24;
+          while (txt.length > 3 && ctx.measureText(txt).width > maxW) txt = txt.slice(0, -1);
+          if (txt !== item.label) txt += '…';
+          ctx.fillText(txt, lx + 16, ly);
+        });
+      }
+      _line(W, H) {
+        const ctx = this.ctx, { data, options = {} } = this.config;
+        const labels = data.labels || [], ds = data.datasets || [];
+        if (!ds.length) return;
+        ctx.clearRect(0, 0, W, H);
+        const pad = { top: 20, right: 16, bottom: 48, left: 46 };
+        const cW = W - pad.left - pad.right, cH = H - pad.top - pad.bottom;
+        const allVals = ds.flatMap(d => d.data || []);
+        const maxV = allVals.length ? Math.max(...allVals) * 1.15 || 10 : 10;
+        const minV = options.scales?.y?.beginAtZero !== false ? 0 : Math.min(...allVals);
+        const range = maxV - minV || 1;
+        ctx.strokeStyle = '#e8e8e8'; ctx.lineWidth = 1;
+        for (let i = 0; i <= 5; i++) {
+          const y = pad.top + cH - (i / 5) * cH;
+          ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + cW, y); ctx.stroke();
+          ctx.fillStyle = '#888'; ctx.font = `${Math.max(10, Math.min(12, W / 30))}px sans-serif`;
+          ctx.textAlign = 'right'; ctx.fillText(Math.round(minV + range * i / 5), pad.left - 5, y + 4);
+        }
+        const stepX = labels.length > 1 ? cW / (labels.length - 1) : cW;
+        ds.forEach(dataset => {
+          const pts = (dataset.data || []).map((v, i) => ({ x: pad.left + i * stepX, y: pad.top + cH - ((v - minV) / range) * cH }));
+          if (!pts.length) return;
+          if (dataset.fill && dataset.backgroundColor) {
+            ctx.beginPath(); ctx.moveTo(pts[0].x, pad.top + cH);
+            pts.forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.lineTo(pts[pts.length - 1].x, pad.top + cH); ctx.closePath();
+            ctx.fillStyle = dataset.backgroundColor; ctx.fill();
+          }
+          ctx.beginPath(); ctx.strokeStyle = dataset.borderColor || '#667eea'; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+          const tension = dataset.tension || 0;
+          if (tension > 0 && pts.length > 1) {
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 0; i < pts.length - 1; i++) {
+              const dx = (pts[i + 1].x - pts[i].x) * 0.4;
+              ctx.bezierCurveTo(pts[i].x + dx, pts[i].y, pts[i + 1].x - dx, pts[i + 1].y, pts[i + 1].x, pts[i + 1].y);
+            }
+          } else { pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)); }
+          ctx.stroke();
+          pts.forEach(p => {
+            ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = dataset.borderColor || '#667eea'; ctx.fill();
+            ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
+          });
+        });
+        const fs = Math.max(9, Math.min(11, W / 40));
+        ctx.fillStyle = '#1a3b5d'; ctx.font = `${fs}px sans-serif`; ctx.textAlign = 'center';
+        labels.forEach((lbl, i) => ctx.fillText(lbl, pad.left + i * stepX, pad.top + cH + 16));
+        ctx.strokeStyle = '#d0d0d0'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, pad.top + cH); ctx.lineTo(pad.left + cW, pad.top + cH); ctx.stroke();
+      }
+    }
+  </script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .tab-btn,
+    .action-btn,
+    .slider-btn,
+    .cal-toggle-btn,
+    .btn-add,
+    .btn-danger,
+    .day-btn,
+    .manual-save-btn,
+    .add-todo,
+    .add-daily-todo,
+    .add-goal,
+    .add-activity-btn {
+      touch-action: manipulation;
+      cursor: pointer;
+    }
+
+    body {
+      font-family: 'Segoe UI', 'Tahoma', system-ui, sans-serif;
+      background: linear-gradient(135deg, #0a1a2f 0%, #1a3b5d 100%);
+      padding: 20px;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 1800px;
+      margin: 0 auto;
+    }
+
+    /* ===== HEADER ===== */
+    .main-header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 30px;
+      padding: 28px 30px;
+      margin-bottom: 25px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+      color: white;
+    }
+
+    .header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .doctor-info h1 {
+      font-size: 2.2rem;
+      margin-bottom: 6px;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    .doctor-info p {
+      font-size: 1rem;
+      opacity: .9;
+    }
+
+    .header-right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 12px;
+    }
+
+    .badge-container {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .badge {
+      background: rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(10px);
+      padding: 8px 18px;
+      border-radius: 50px;
+      font-size: .85rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid rgba(255, 255, 255, .3);
+    }
+
+    /* Calendar Switch */
+    .cal-switch-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .cal-switch-label {
+      font-size: .9rem;
+      opacity: .9;
+    }
+
+    .cal-toggle {
+      display: flex;
+      background: rgba(0, 0, 0, .25);
+      border-radius: 50px;
+      padding: 4px;
+      gap: 4px;
+    }
+
+    .cal-toggle-btn {
+      background: transparent;
+      border: none;
+      color: rgba(255, 255, 255, .75);
+      padding: 7px 18px;
+      border-radius: 50px;
+      font-size: .85rem;
+      cursor: pointer;
+      transition: .25s;
+      font-weight: 600;
+    }
+
+    .cal-toggle-btn.active {
+      background: white;
+      color: #764ba2;
+    }
+
+    /* Today Date Display */
+    .today-display {
+      background: rgba(255, 255, 255, .15);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 10px 20px;
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      align-items: center;
+      border: 1px solid rgba(255, 255, 255, .25);
+    }
+
+    .today-display .td-label {
+      font-size: .75rem;
+      opacity: .8;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .today-display .td-val {
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .today-display .td-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    /* Stats Cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      margin-bottom: 25px;
+    }
+
+    .stat-card {
+      background: white;
+      border-radius: 20px;
+      padding: 20px;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .15);
+      transition: .3s;
+    }
+
+    .stat-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 15px 40px rgba(0, 0, 0, .2);
+    }
+
+    .stat-icon {
+      width: 60px;
+      height: 60px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.8rem;
+      color: white;
+      flex-shrink: 0;
+    }
+
+    .stat-info h3 {
+      color: #666;
+      font-size: .85rem;
+      margin-bottom: 4px;
+    }
+
+    .stat-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #1a3b5d;
+    }
+
+    .stat-label {
+      color: #28a745;
+      font-size: .75rem;
+    }
+
+    /* Quick Actions */
+    .quick-actions {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    .action-btn {
+      background: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 50px;
+      font-size: .9rem;
+      font-weight: 600;
+      color: #1a3b5d;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: .3s;
+      box-shadow: 0 5px 15px rgba(0, 0, 0, .1);
+    }
+
+    .action-btn:hover {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      transform: translateY(-2px);
+    }
+
+    .action-btn.danger {
+      color: #dc3545;
+    }
+
+    .action-btn.danger:hover {
+      background: linear-gradient(135deg, #dc3545, #c82333);
+    }
+
+    /* Save */
+    .save-button-container {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 20px;
+    }
+
+    .manual-save-btn {
+      background: linear-gradient(135deg, #28a745, #20c997);
+      color: white;
+      border: none;
+      padding: 13px 35px;
+      border-radius: 50px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: .3s;
+      box-shadow: 0 10px 20px rgba(40, 167, 69, .3);
+    }
+
+    .manual-save-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 15px 30px rgba(40, 167, 69, .4);
+    }
+
+    /* Tab Nav */
+    .tab-navigation {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      background: white;
+      padding: 12px;
+      border-radius: 60px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .1);
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      padding: 10px 22px;
+      border-radius: 50px;
+      font-size: .9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: .3s;
+      color: #1a3b5d;
+      flex: 1;
+      min-width: 120px;
+    }
+
+    .tab-btn.active {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      box-shadow: 0 5px 15px rgba(102, 126, 234, .4);
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    /* ===== WEEKLY VIEW ===== */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 25px;
+      margin-bottom: 25px;
+    }
+
+    .schedule-card,
+    .subjects-card {
+      background: white;
+      border-radius: 30px;
+      padding: 25px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .15);
+    }
+
+    .schedule-scroll-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .days-header,
+    .time-row {
+      min-width: 580px;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .card-header h2 {
+      color: #1a3b5d;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .schedule-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .schedule-header h2 {
+      color: #1a3b5d;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .days-header {
+      display: grid;
+      grid-template-columns: 80px repeat(7, 1fr);
+      gap: 8px;
+      background: linear-gradient(135deg, #667eea10, #764ba210);
+      padding: 12px;
+      border-radius: 16px;
+      font-weight: 700;
+      color: #1a3b5d;
+      text-align: center;
+      margin-bottom: 10px;
+    }
+
+    .time-row {
+      display: grid;
+      grid-template-columns: 80px repeat(7, 1fr);
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .time-label {
+      background: linear-gradient(135deg, #667eea20, #764ba220);
+      border-radius: 12px;
+      padding: 12px 5px;
+      text-align: center;
+      font-weight: 600;
+      color: #1a3b5d;
+      font-size: .9rem;
+    }
+
+    .day-cell {
+      background: white;
+      border: 2px solid #e0e7ff;
+      border-radius: 12px;
+      padding: 5px;
+      min-height: 55px;
+      transition: .3s;
+    }
+
+    .day-cell:hover {
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, .1);
+    }
+
+    .day-cell input {
+      width: 100%;
+      border: none;
+      background: transparent;
+      font-size: .85rem;
+      padding: 3px;
+      outline: none;
+      border-bottom: 1px dashed #cbd5e0;
+    }
+
+    .day-name {
+      font-size: .75rem;
+      color: #666;
+      display: block;
+    }
+
+    /* Subjects */
+    .add-subject-btn {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 50px;
+      font-size: .9rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: .3s;
+    }
+
+    .add-subject-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(102, 126, 234, .4);
+    }
+
+    .subjects-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: 500px;
+      overflow-y: auto;
+      padding-right: 8px;
+    }
+
+    .subject-item {
+      background: #f8fafd;
+      border-radius: 16px;
+      padding: 14px;
+      border: 2px solid #e0e7ff;
+      transition: .3s;
+    }
+
+    .subject-item:hover {
+      border-color: #667eea;
+    }
+
+    .subject-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .subject-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      color: #1a3b5d;
+    }
+
+    .subject-title input {
+      border: none;
+      background: white;
+      padding: 6px 12px;
+      border-radius: 30px;
+      font-size: .9rem;
+      width: 140px;
+      outline: none;
+      border: 2px solid transparent;
+    }
+
+    .subject-title input:focus {
+      border-color: #667eea;
+    }
+
+    .delete-subject {
+      color: #dc3545;
+      cursor: pointer;
+      font-size: 1.2rem;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: .3s;
+    }
+
+    .delete-subject:hover {
+      background: #ffebee;
+    }
+
+    .todo-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .todo-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: white;
+      padding: 8px 12px;
+      border-radius: 50px;
+    }
+
+    .todo-item input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #667eea;
+    }
+
+    .todo-item input[type="text"] {
+      border: none;
+      background: transparent;
+      flex: 1;
+      font-size: .85rem;
+      outline: none;
+    }
+
+    .todo-priority {
+      background: #ffc107;
+      color: #000;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: .7rem;
+      font-weight: 700;
+      border: none;
+      outline: none;
+    }
+
+    .delete-task {
+      color: #dc3545;
+      cursor: pointer;
+      font-size: 1rem;
+      opacity: .6;
+      transition: .3s;
+    }
+
+    .delete-task:hover {
+      opacity: 1;
+    }
+
+    .add-todo {
+      color: #667eea;
+      font-size: .85rem;
+      cursor: pointer;
+      padding: 7px;
+      text-align: center;
+      border: 2px dashed #e0e7ff;
+      border-radius: 50px;
+      margin-top: 5px;
+      transition: .3s;
+    }
+
+    .add-todo:hover {
+      border-color: #667eea;
+      background: #667eea10;
+    }
+
+    /* Exam Countdown section */
+    .section-card {
+      background: white;
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+      margin-top: 18px;
+    }
+
+    .section-card h3 {
+      color: #1a3b5d;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 1.1rem;
+    }
+
+    .countdown-form {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .countdown-form .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .countdown-form input,
+    .countdown-form select {
+      padding: 9px 14px;
+      border: 2px solid #e0e7ff;
+      border-radius: 50px;
+      font-size: .9rem;
+      outline: none;
+      flex: 1;
+      min-width: 100px;
+    }
+
+    .countdown-form input:focus,
+    .countdown-form select:focus {
+      border-color: #667eea;
+    }
+
+    .btn-add {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border: none;
+      padding: 9px 22px;
+      border-radius: 50px;
+      font-size: .9rem;
+      cursor: pointer;
+      transition: .3s;
+    }
+
+    .btn-add:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 5px 12px rgba(102, 126, 234, .35);
+    }
+
+    .btn-danger {
+      background: #ffebee;
+      color: #dc3545;
+      border: 2px solid #ffcdd2;
+      padding: 7px 16px;
+      border-radius: 50px;
+      font-size: .85rem;
+      cursor: pointer;
+      transition: .3s;
+    }
+
+    .btn-danger:hover {
+      background: #ffcdd2;
+    }
+
+    .countdown-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .countdown-item {
+      background: linear-gradient(135deg, #667eea12, #764ba210);
+      border: 1px solid #e0e7ff;
+      border-radius: 16px;
+      padding: 14px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .countdown-item.urgent {
+      background: linear-gradient(135deg, #ff6b6b18, #dc354518);
+      border-color: #ffcdd2;
+    }
+
+    .countdown-item.soon {
+      background: linear-gradient(135deg, #ffc10718, #fd7e1418);
+      border-color: #ffe0b2;
+    }
+
+    .countdown-name {
+      font-weight: 700;
+      color: #1a3b5d;
+      font-size: .95rem;
+    }
+
+    .countdown-days {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #667eea;
+    }
+
+    .countdown-days.urgent {
+      color: #dc3545;
+    }
+
+    .countdown-days.soon {
+      color: #fd7e14;
+    }
+
+    .countdown-meta {
+      font-size: .8rem;
+      color: #888;
+    }
+
+    .countdown-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .countdown-actions button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 8px;
+      font-size: .85rem;
+      transition: .2s;
+    }
+
+    .countdown-actions button:hover {
+      background: #e0e7ff;
+    }
+
+    /* Study Goals */
+    .goals-tracker {
+      background: white;
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+      margin-top: 18px;
+    }
+
+    .goals-tracker h3 {
+      color: #1a3b5d;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 1.1rem;
+    }
+
+    .goals-summary {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .goal-stat {
+      background: #f8fafd;
+      border-radius: 14px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    .goal-stat .gs-val {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #667eea;
+    }
+
+    .goal-stat .gs-lbl {
+      font-size: .75rem;
+      color: #888;
+    }
+
+    .goal-input-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .goal-input-row input {
+      padding: 8px 14px;
+      border: 2px solid #e0e7ff;
+      border-radius: 50px;
+      font-size: .9rem;
+      outline: none;
+      flex: 1;
+    }
+
+    .goal-input-row input:focus {
+      border-color: #667eea;
+    }
+
+    .goals-list-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .goal-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #f8fafd;
+      padding: 8px 12px;
+      border-radius: 50px;
+    }
+
+    .goal-item input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #667eea;
+    }
+
+    .goal-item input[type="text"] {
+      border: none;
+      background: white;
+      padding: 5px 10px;
+      border-radius: 20px;
+      flex: 1;
+      outline: none;
+      font-size: .9rem;
+    }
+
+    .goal-item .delete-goal {
+      color: #dc3545;
+      cursor: pointer;
+      font-size: 1rem;
+      opacity: .6;
+    }
+
+    .goal-item .delete-goal:hover {
+      opacity: 1;
+    }
+
+    .add-goal {
+      color: #667eea;
+      font-size: .85rem;
+      cursor: pointer;
+      padding: 7px;
+      text-align: center;
+      border: 2px dashed #e0e7ff;
+      border-radius: 50px;
+      margin-top: 5px;
+      transition: .3s;
+    }
+
+    .add-goal:hover {
+      border-color: #667eea;
+      background: #667eea10;
+    }
+
+    .progress-bar-wrap {
+      margin: 10px 0;
+    }
+
+    .progress-lbl {
+      display: flex;
+      justify-content: space-between;
+      font-size: .85rem;
+      color: #666;
+      margin-bottom: 4px;
+    }
+
+    .progress-bar {
+      height: 10px;
+      background: #e0e7ff;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #667eea, #764ba2);
+      border-radius: 10px;
+      transition: width .5s;
+    }
+
+    /* Monthly Calendar */
+    .monthly-cal {
+      background: white;
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+      margin-top: 18px;
+    }
+
+    .monthly-cal h3 {
+      color: #1a3b5d;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 1.1rem;
+    }
+
+    .cal-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .cal-nav button {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border: none;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      font-size: 1.1rem;
+      cursor: pointer;
+      transition: .2s;
+    }
+
+    .cal-nav button:hover {
+      transform: scale(1.1);
+    }
+
+    .cal-month-title {
+      font-weight: 700;
+      color: #1a3b5d;
+      font-size: 1rem;
+    }
+
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+    }
+
+    .cal-day-head {
+      text-align: center;
+      font-size: .75rem;
+      font-weight: 700;
+      color: #667eea;
+      padding: 6px 2px;
+    }
+
+    .cal-day {
+      text-align: center;
+      padding: 8px 4px;
+      border-radius: 10px;
+      font-size: .85rem;
+      font-weight: 600;
+      color: #1a3b5d;
+      cursor: pointer;
+      transition: .2s;
+      position: relative;
+      min-height: 36px;
+    }
+
+    .cal-day:hover {
+      background: #e0e7ff;
+    }
+
+    .cal-day.today {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+    }
+
+    .cal-day.selected {
+      background: #e8f5e9;
+      color: #28a745;
+      border: 2px solid #28a745;
+    }
+
+    .cal-day.has-tasks::after {
+      content: '•';
+      position: absolute;
+      bottom: 2px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #667eea;
+      font-size: 1rem;
+      line-height: 1;
+    }
+
+    .cal-day.has-tasks.today::after {
+      color: rgba(255, 255, 255, .8);
+    }
+
+    .cal-day.empty {
+      cursor: default;
+    }
+
+    /* Charts */
+    .chart-card {
+      background: white;
+      border-radius: 30px;
+      padding: 25px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .15);
+      margin-top: 25px;
+    }
+
+    .chart-container {
+      height: 300px;
+      margin-top: 16px;
+      position: relative;
+    }
+
+    .update-chart {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border: none;
+      padding: 13px 30px;
+      border-radius: 50px;
+      font-size: 1rem;
+      cursor: pointer;
+      width: 100%;
+      transition: .3s;
+      margin-bottom: 20px;
+    }
+
+    .update-chart:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 25px rgba(102, 126, 234, .4);
+    }
+
+    .percentage-inputs {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+      max-height: 220px;
+      overflow-y: auto;
+      padding: 12px;
+      background: #f8fafd;
+      border-radius: 16px;
+    }
+
+    .percentage-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: white;
+      padding: 7px 10px;
+      border-radius: 30px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, .05);
+    }
+
+    .percentage-item label {
+      font-size: .82rem;
+      color: #1a3b5d;
+      font-weight: 600;
+      flex: 1;
+    }
+
+    .percentage-item input {
+      width: 60px;
+      border: 1px solid #e0e7ff;
+      border-radius: 20px;
+      padding: 5px;
+      text-align: center;
+      outline: none;
+    }
+
+    .percentage-item input:focus {
+      border-color: #667eea;
+    }
+
+    .weekly-pie-section {
+      background: white;
+      border-radius: 30px;
+      padding: 25px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .15);
+      margin-top: 25px;
+    }
+
+    .weekly-pie-section h3 {
+      color: #1a3b5d;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .weekly-pie-container {
+      height: 320px;
+      position: relative;
+    }
+
+    /* Progress */
+    .progress-section {
+      background: white;
+      border-radius: 20px;
+      padding: 20px;
+      margin-top: 20px;
+    }
+
+    .progress-header-with-input {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .progress-header-with-input h3 {
+      color: #1a3b5d;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .target-input {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .target-input label {
+      color: #666;
+      font-size: .85rem;
+    }
+
+    .target-input input {
+      width: 65px;
+      padding: 5px 8px;
+      border: 1px solid #e0e7ff;
+      border-radius: 20px;
+      text-align: center;
+      outline: none;
+    }
+
+    .target-input input:focus {
+      border-color: #667eea;
+    }
+
+    .progress-item {
+      margin-bottom: 18px;
+    }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      font-size: .9rem;
+    }
+
+    /* Notes */
+    .notes-section {
+      background: white;
+      border-radius: 30px;
+      padding: 25px;
+      margin-top: 25px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .15);
+    }
+
+    .notes-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-top: 14px;
+    }
+
+    .note-item {
+      background: #f8fafd;
+      border-radius: 16px;
+      padding: 14px;
+    }
+
+    .note-item h3 {
+      color: #1a3b5d;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 1rem;
+    }
+
+    .note-item textarea {
+      width: 100%;
+      height: 110px;
+      border: 1px solid #e0e7ff;
+      border-radius: 12px;
+      padding: 10px;
+      font-family: inherit;
+      resize: vertical;
+      outline: none;
+      font-size: .9rem;
+    }
+
+    .note-item textarea:focus {
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, .1);
+    }
+
+    /* ===== DAILY PLANNER ===== */
+    .day-slider-container {
+      background: white;
+      border-radius: 30px;
+      padding: 25px;
+      margin-bottom: 25px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .15);
+    }
+
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .slider-controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .slider-btn {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border: none;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      font-size: 1.4rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: .3s;
+    }
+
+    .slider-btn:hover:not(:disabled) {
+      transform: scale(1.1);
+      box-shadow: 0 5px 15px rgba(102, 126, 234, .4);
+    }
+
+    .slider-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .day-indicator {
+      font-size: 1.6rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      min-width: 180px;
+      text-align: center;
+    }
+
+    .daily-schedule {
+      display: grid;
+      grid-template-columns: 2fr 1.4fr;
+      gap: 20px;
+    }
+
+    .daily-tasks {
+      background: #f8fafd;
+      border-radius: 20px;
+      padding: 18px;
+    }
+
+    .daily-tasks h3 {
+      color: #1a3b5d;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 1.1rem;
+    }
+
+    .daily-todo-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+      max-height: 380px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .daily-todo-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: white;
+      padding: 12px;
+      border-radius: 14px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, .05);
+      transition: .3s;
+      flex-wrap: wrap;
+    }
+
+    .daily-todo-item:hover {
+      box-shadow: 0 5px 15px rgba(0, 0, 0, .1);
+    }
+
+    .daily-todo-item input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: #667eea;
+      flex-shrink: 0;
+    }
+
+    .daily-todo-item .task-subject-tag {
+      background: linear-gradient(135deg, #667eea20, #764ba220);
+      color: #667eea;
+      font-size: .75rem;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 20px;
+      white-space: nowrap;
+    }
+
+    .daily-todo-item input[type="text"] {
+      border: none;
+      background: transparent;
+      flex: 1;
+      font-size: .9rem;
+      outline: none;
+      padding: 3px;
+      min-width: 80px;
+    }
+
+    .daily-todo-item select {
+      background: #e8f0fe;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: .8rem;
+      outline: none;
+    }
+
+    .daily-todo-item .time-range {
+      font-size: .75rem;
+      color: #888;
+      white-space: nowrap;
+    }
+
+    .daily-todo-item .delete-dtask {
+      color: #dc3545;
+      cursor: pointer;
+      font-size: .9rem;
+      opacity: .6;
+    }
+
+    .daily-todo-item .delete-dtask:hover {
+      opacity: 1;
+    }
+
+    .add-daily-todo {
+      color: #667eea;
+      font-size: .9rem;
+      cursor: pointer;
+      padding: 10px;
+      text-align: center;
+      border: 2px dashed #667eea;
+      border-radius: 50px;
+      margin-top: 8px;
+      transition: .3s;
+    }
+
+    .add-daily-todo:hover {
+      background: #667eea10;
+      border-color: #764ba2;
+    }
+
+    .daily-stats {
+      background: #f8fafd;
+      border-radius: 20px;
+      padding: 18px;
+    }
+
+    .daily-stats h3 {
+      color: #1a3b5d;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 1.1rem;
+    }
+
+    .activity-inputs {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 16px;
+      max-height: 270px;
+      overflow-y: auto;
+    }
+
+    .activity-input-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: white;
+      padding: 10px 12px;
+      border-radius: 50px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, .05);
+    }
+
+    .activity-input-item label {
+      min-width: 80px;
+      font-weight: 600;
+      color: #1a3b5d;
+      font-size: .9rem;
+    }
+
+    .activity-input-item input {
+      width: 70px;
+      border: 1px solid #e0e7ff;
+      border-radius: 30px;
+      padding: 6px;
+      text-align: center;
+      outline: none;
+    }
+
+    .activity-input-item input:focus {
+      border-color: #667eea;
+    }
+
+    .delete-activity {
+      color: #dc3545;
+      cursor: pointer;
+      font-size: 1.1rem;
+      opacity: .7;
+      transition: .3s;
+    }
+
+    .delete-activity:hover {
+      opacity: 1;
+    }
+
+    .add-activity-btn {
+      color: #667eea;
+      font-size: .9rem;
+      cursor: pointer;
+      padding: 9px;
+      text-align: center;
+      border: 2px dashed #667eea;
+      border-radius: 50px;
+      transition: .3s;
+    }
+
+    .add-activity-btn:hover {
+      background: #667eea10;
+    }
+
+    .pie-chart-container {
+      height: 230px;
+      margin-top: 16px;
+      position: relative;
+    }
+
+    /* Add Task Modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(10, 26, 47, .65);
+      z-index: 3000;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .modal-overlay.open {
+      display: flex;
+    }
+
+    .modal {
+      background: white;
+      border-radius: 28px;
+      width: 100%;
+      max-width: 480px;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .3);
+      animation: slideUp .3s ease;
+    }
+
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px) scale(.97)
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1)
+      }
+    }
+
+    .modal-header {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      padding: 20px 24px;
+      border-radius: 28px 28px 0 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .modal-header h3 {
+      font-size: 1.2rem;
+    }
+
+    .modal-close {
+      background: rgba(255, 255, 255, .2);
+      border: none;
+      color: white;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      font-size: 1.2rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: .2s;
+    }
+
+    .modal-close:hover {
+      background: rgba(255, 255, 255, .35);
+    }
+
+    .modal-body {
+      padding: 24px;
+    }
+
+    .modal-field {
+      margin-bottom: 14px;
+    }
+
+    .modal-field label {
+      display: block;
+      font-size: .85rem;
+      font-weight: 600;
+      color: #1a3b5d;
+      margin-bottom: 6px;
+    }
+
+    .modal-field input,
+    .modal-field select {
+      width: 100%;
+      padding: 10px 14px;
+      border: 2px solid #e0e7ff;
+      border-radius: 50px;
+      font-size: .9rem;
+      outline: none;
+    }
+
+    .modal-field input:focus,
+    .modal-field select:focus {
+      border-color: #667eea;
+    }
+
+    .modal-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 0 24px 20px;
+    }
+
+    /* ===== ANALYTICS TAB ===== */
+    .analytics-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    .analytics-card {
+      background: #f8fafd;
+      padding: 20px;
+      border-radius: 20px;
+    }
+
+    .analytics-card h4 {
+      color: #1a3b5d;
+      margin-bottom: 14px;
+      font-size: 1rem;
+    }
+
+    .analytics-chart-wrap {
+      height: 220px;
+      position: relative;
+    }
+
+    /* ===== YEAR PLANNER ===== */
+    .year-planner-container {
+      padding: 8px 0;
+    }
+
+    .season-block {
+      margin-bottom: 32px;
+    }
+
+    .season-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 14px 22px;
+      border-radius: 18px;
+      color: white;
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: .5px;
+    }
+
+    .season-spring {
+      background: linear-gradient(135deg, #43e97b, #38f9d7);
+    }
+
+    .season-summer {
+      background: linear-gradient(135deg, #f7971e, #ffd200);
+      color: #333 !important;
+    }
+
+    .season-autumn {
+      background: linear-gradient(135deg, #f093fb, #f5576c);
+    }
+
+    .season-winter {
+      background: linear-gradient(135deg, #4facfe, #00f2fe);
+    }
+
+    .months-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .month-card {
+      background: white;
+      border-radius: 20px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .1);
+      overflow: hidden;
+      transition: .25s;
+      cursor: pointer;
+      border: 2px solid transparent;
+    }
+
+    .month-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 14px 32px rgba(102, 126, 234, .18);
+      border-color: #667eea;
+    }
+
+    .month-card.open {
+      border-color: #667eea;
+    }
+
+    .month-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 18px;
+      font-weight: 700;
+      color: #1a3b5d;
+      font-size: 1rem;
+    }
+
+    .month-num {
+      background: #e8f0fe;
+      color: #667eea;
+      border-radius: 50px;
+      padding: 3px 12px;
+      font-size: .8rem;
+    }
+
+    .toggle-arrow {
+      font-size: 1rem;
+      transition: transform .3s;
+    }
+
+    .month-card.open .toggle-arrow {
+      transform: rotate(180deg);
+    }
+
+    .days-grid {
+      display: none;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0;
+      padding: 10px;
+      background: #f8fafd;
+    }
+
+    .month-card.open .days-grid {
+      display: grid;
+    }
+
+    .day-btn {
+      background: white;
+      border: 1px solid #e0e7ff;
+      border-radius: 8px;
+      margin: 2px;
+      padding: 7px 3px;
+      font-size: .82rem;
+      font-weight: 600;
+      color: #1a3b5d;
+      cursor: pointer;
+      text-align: center;
+      transition: .2s;
+      line-height: 1.2;
+    }
+
+    .day-btn:hover {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border-color: #667eea;
+      transform: scale(1.06);
+    }
+
+    .day-btn.has-data {
+      background: #e8f5e9;
+      border-color: #28a745;
+    }
+
+    .day-btn.today-mark {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border-color: #764ba2;
+    }
+
+    /* Hours Panel */
+    .hours-panel-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(10, 26, 47, .65);
+      z-index: 2000;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .hours-panel-overlay.open {
+      display: flex;
+    }
+
+    .hours-panel {
+      background: white;
+      border-radius: 28px;
+      width: 100%;
+      max-width: 880px;
+      max-height: 88vh;
+      overflow-y: auto;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .3);
+      animation: slideUp .3s ease;
+    }
+
+    .hours-panel-header {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      padding: 20px 26px;
+      border-radius: 28px 28px 0 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .hours-panel-header h2 {
+      font-size: 1.3rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .close-panel-btn {
+      background: rgba(255, 255, 255, .2);
+      border: none;
+      color: white;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      font-size: 1.3rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: .2s;
+    }
+
+    .close-panel-btn:hover {
+      background: rgba(255, 255, 255, .35);
+      transform: scale(1.1);
+    }
+
+    .hours-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      padding: 22px;
+    }
+
+    .hour-slot {
+      background: #f8fafd;
+      border: 2px solid #e0e7ff;
+      border-radius: 14px;
+      padding: 11px 9px;
+      transition: .2s;
+    }
+
+    .hour-slot:hover {
+      border-color: #667eea;
+      box-shadow: 0 4px 12px rgba(102, 126, 234, .15);
+    }
+
+    .hour-slot.filled {
+      background: linear-gradient(135deg, #667eea15, #764ba215);
+      border-color: #764ba2;
+    }
+
+    .hour-slot-label {
+      font-size: .75rem;
+      font-weight: 700;
+      color: #667eea;
+      margin-bottom: 5px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .hour-slot input {
+      width: 100%;
+      border: none;
+      background: transparent;
+      font-size: .82rem;
+      color: #1a3b5d;
+      outline: none;
+      border-bottom: 1px dashed #cbd5e0;
+      padding: 3px 2px;
+    }
+
+    .hour-slot input::placeholder {
+      color: #aab;
+      font-size: .78rem;
+    }
+
+    .hours-panel-footer {
+      padding: 14px 22px;
+      border-top: 1px solid #e0e7ff;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      position: sticky;
+      bottom: 0;
+      background: white;
+      border-radius: 0 0 28px 28px;
+    }
+
+    .save-day-btn {
+      background: linear-gradient(135deg, #28a745, #20c997);
+      color: white;
+      border: none;
+      padding: 11px 28px;
+      border-radius: 50px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: .2s;
+    }
+
+    .save-day-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(40, 167, 69, .3);
+    }
+
+    .clear-day-btn {
+      background: #fff0f0;
+      color: #dc3545;
+      border: 2px solid #ffcdd2;
+      padding: 11px 22px;
+      border-radius: 50px;
+      font-size: .95rem;
+      cursor: pointer;
+      transition: .2s;
+    }
+
+    .clear-day-btn:hover {
+      background: #ffebee;
+    }
+
+    /* Save status */
+    .save-status {
+      background: linear-gradient(135deg, #28a745, #20c997);
+      color: white;
+      padding: 11px 28px;
+      border-radius: 50px;
+      font-size: .95rem;
+      position: fixed;
+      bottom: 28px;
+      left: 28px;
+      z-index: 9999;
+      box-shadow: 0 10px 25px rgba(40, 167, 69, .3);
+      opacity: 0;
+      transition: .3s;
+    }
+
+    .save-status.show {
+      opacity: 1;
+    }
+
+    /* Reset Panel */
+    .reset-panel {
+      background: white;
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+      margin-top: 20px;
+    }
+
+    .reset-panel h3 {
+      color: #1a3b5d;
+      margin-bottom: 14px;
+      font-size: 1.05rem;
+    }
+
+    .reset-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+    }
+
+    .reset-btn {
+      padding: 10px 16px;
+      border-radius: 50px;
+      border: 2px solid;
+      font-size: .85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: .3s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: center;
+    }
+
+    .reset-btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .reset-day {
+      border-color: #17a2b8;
+      color: #17a2b8;
+      background: #e8f8fb;
+    }
+
+    .reset-day:hover {
+      background: #17a2b8;
+      color: white;
+    }
+
+    .reset-week {
+      border-color: #6f42c1;
+      color: #6f42c1;
+      background: #f3e8ff;
+    }
+
+    .reset-week:hover {
+      background: #6f42c1;
+      color: white;
+    }
+
+    .reset-month {
+      border-color: #fd7e14;
+      color: #fd7e14;
+      background: #fff3e0;
+    }
+
+    .reset-month:hover {
+      background: #fd7e14;
+      color: white;
+    }
+
+    .factory-reset {
+      border-color: #dc3545;
+      color: #dc3545;
+      background: #ffebee;
+    }
+
+    .factory-reset:hover {
+      background: #dc3545;
+      color: white;
+    }
+
+    @media(max-width:900px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .analytics-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .months-row {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .daily-schedule {
+        grid-template-columns: 1fr;
+      }
+
+      .notes-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media(max-width:600px) {
+      body {
+        padding: 10px;
+      }
+
+      .doctor-info h1 {
+        font-size: 1.4rem;
+      }
+
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+      }
+
+      .stat-value {
+        font-size: 1.4rem;
+      }
+
+      .tab-btn {
+        padding: 8px 10px;
+        font-size: .8rem;
+        min-width: 80px;
+      }
+
+      .months-row {
+        grid-template-columns: 1fr;
+      }
+
+      .hours-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .main-header {
+        padding: 18px 16px;
+      }
+
+      .today-display {
+        gap: 12px;
+      }
+
+      .badge-container {
+        gap: 8px;
+      }
+
+      .header-right {
+        align-items: flex-start;
+      }
+
+      .action-btn {
+        padding: 8px 14px;
+        font-size: .82rem;
+      }
+
+      .chart-container {
+        height: 220px;
+      }
+
+      .weekly-pie-container {
+        height: 250px;
+      }
+
+      .analytics-chart-wrap {
+        height: 180px;
+      }
+    }
+
+    @media print {
+
+      .save-button-container,
+      .add-subject-btn,
+      .add-todo,
+      .delete-subject,
+      .update-chart,
+      .tab-navigation,
+      .slider-btn,
+      .add-daily-todo,
+      .add-activity-btn,
+      .quick-actions {
+        display: none;
+      }
+    }
+
+    /* ===== STUDY HOURS SUMMARY ===== */
+    .study-hours-summary {
+      background: white;
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+      margin-top: 18px;
+    }
+
+    .study-hours-summary h3 {
+      color: #1a3b5d;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 1.1rem;
+    }
+
+    .study-hours-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .study-hours-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #f8fafd;
+      padding: 10px 16px;
+      border-radius: 50px;
+      font-size: .9rem;
+    }
+
+    .study-hours-subject {
+      font-weight: 600;
+      color: #1a3b5d;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .study-hours-val {
+      font-weight: 700;
+      color: #667eea;
+      background: #e8f0fe;
+      padding: 3px 12px;
+      border-radius: 20px;
+    }
+
+    .study-hours-total-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(135deg, #667eea18, #764ba218);
+      border: 2px solid #d0d9ff;
+      padding: 12px 16px;
+      border-radius: 50px;
+      font-weight: 700;
+      font-size: 1rem;
+      color: #1a3b5d;
+    }
+
+    .study-hours-total-row .total-val {
+      color: #764ba2;
+      font-size: 1.2rem;
+      background: linear-gradient(135deg, #667eea20, #764ba220);
+      padding: 4px 14px;
+      border-radius: 20px;
+    }
+
+    .study-hours-note {
+      font-size: .75rem;
+      color: #aaa;
+      text-align: center;
+      margin-top: 8px;
+    }
+
+    .study-hours-empty {
+      text-align: center;
+      color: #bbb;
+      padding: 16px;
+      font-size: .9rem;
+      font-style: italic;
+    }
+
+    .analytics-new-card {
+      background: #f8fafd;
+      padding: 20px;
+      border-radius: 20px;
+      margin-top: 16px;
+    }
+
+    .analytics-new-card h4 {
+      color: #1a3b5d;
+      margin-bottom: 14px;
+      font-size: 1rem;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <!-- MAIN HEADER -->
+    <div class="main-header">
+      <div class="header-top">
+        <div class="doctor-info">
+          <h1>🏥 Dr. Mohammad Hossein Hemmati</h1>
+          <p>Medical Study Hub v4 • Performance Analytics • Smart Planning</p>
+        </div>
+        <div class="header-right">
+          <div class="badge-container">
+            <div class="badge"><span>🎯</span><span id="overallProgress">0% Overall</span></div>
+            <div class="badge"><span>📚</span><span id="headerSubjectCount">0 Subjects</span></div>
+          </div>
+          <div class="cal-switch-row">
+            <span class="cal-switch-label">📅 Calendar:</span>
+            <div class="cal-toggle">
+              <button class="cal-toggle-btn active" id="btnPersian" onclick="setCalMode('persian')">Persian
+                (شمسی)</button>
+              <button class="cal-toggle-btn" id="btnGregorian" onclick="setCalMode('gregorian')">Gregorian</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="today-display">
+        <span style="font-size:1.3rem;">📅</span>
+        <div class="td-item">
+          <div class="td-label">Today</div>
+          <div class="td-val" id="todayLabel">–</div>
+        </div>
+        <div class="td-item">
+          <div class="td-label">Persian (شمسی)</div>
+          <div class="td-val" id="todayPersian">–</div>
+        </div>
+        <div class="td-item">
+          <div class="td-label">Gregorian</div>
+          <div class="td-val" id="todayGregorian">–</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon">📚</div>
+        <div class="stat-info">
+          <h3>Total Subjects</h3>
+          <div class="stat-value" id="totalSubjects">0</div>
+          <div class="stat-label">active</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">✅</div>
+        <div class="stat-info">
+          <h3>Tasks Done</h3>
+          <div class="stat-value" id="completedTasks">0</div>
+          <div class="stat-label">this week</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">⏰</div>
+        <div class="stat-info">
+          <h3>Study Hours</h3>
+          <div class="stat-value" id="totalStudyHours">0</div>
+          <div class="stat-label">this week</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📊</div>
+        <div class="stat-info">
+          <h3>Avg Efficiency</h3>
+          <div class="stat-value" id="avgEfficiency">0%</div>
+          <div class="stat-label">based on input</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="quick-actions">
+      <button class="action-btn" onclick="quickAddSubject()">➕ Quick Add Subject</button>
+      <button class="action-btn" onclick="openAddTaskModal()">📝 Quick Add Task</button>
+      <button class="action-btn" onclick="exportData()">📤 Export Data</button>
+      <button class="action-btn" onclick="importData()">📥 Import Data</button>
+      <button class="action-btn" onclick="syncToGithub()">☁️ Sync to GitHub</button>
+      <button class="action-btn" onclick="loadFromGithub()">🔄 Load from GitHub</button>
+    </div>
+    <div class="save-button-container">
+      <button class="manual-save-btn" onclick="saveToFile()"
+        title="Save all changes and download updated file"><span>💾</span> Save File</button>
+    </div>
+
+    <!-- Tab Navigation -->
+    <div class="tab-navigation">
+      <button class="tab-btn active" onclick="switchTab('weekly')">📅 Weekly Overview</button>
+      <button class="tab-btn" onclick="switchTab('daily')">📋 Daily Planner</button>
+      <button class="tab-btn" onclick="switchTab('analytics')">📊 Analytics</button>
+      <button class="tab-btn" onclick="switchTab('yearplan')">🗓️ Year Planner</button>
+    </div>
+
+    <!-- ======== WEEKLY TAB ======== -->
+    <div id="weeklyTab" class="tab-content active">
+      <div class="main-grid">
+        <!-- Schedule -->
+        <div class="schedule-card">
+          <div class="schedule-header">
+            <h2>⏰ 24-Hour Schedule</h2>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button onclick="changeWeek(-1)" title="Previous Week"
+                style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;width:34px;height:34px;border-radius:50%;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;">←</button>
+              <span id="weekRangeLabel"
+                style="font-size:.82rem;color:#667eea;font-weight:600;min-width:140px;text-align:center;"></span>
+              <button onclick="changeWeek(1)" title="Next Week"
+                style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;width:34px;height:34px;border-radius:50%;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;">→</button>
+            </div>
+          </div>
+          <div class="schedule-scroll-wrap">
+            <div class="days-header">
+              <div>Time</div>
+              <div>Sat<span class="day-name">Saturday</span></div>
+              <div>Sun<span class="day-name">Sunday</span></div>
+              <div>Mon<span class="day-name">Monday</span></div>
+              <div>Tue<span class="day-name">Tuesday</span></div>
+              <div>Wed<span class="day-name">Wednesday</span></div>
+              <div>Thu<span class="day-name">Thursday</span></div>
+              <div>Fri<span class="day-name">Friday</span></div>
+            </div>
+            <div id="scheduleRows"></div>
+          </div>
+        </div>
+
+        <!-- Right -->
+        <div>
+          <div class="subjects-card">
+            <div class="card-header">
+              <h2>📚 Subjects & Tasks</h2>
+              <button class="add-subject-btn" onclick="addNewSubject()">+ Add Subject</button>
+            </div>
+            <div class="subjects-list" id="subjectsList"></div>
+          </div>
+
+          <!-- Exam Countdown -->
+          <div class="section-card">
+            <h3>🩺 Exam &amp; Rotation Countdown</h3>
+            <div class="countdown-form">
+              <div class="row">
+                <input type="text" id="evtName" placeholder="Exam / Rotation Name">
+              </div>
+              <div class="row">
+                <input type="text" id="evtDatePersian" placeholder="Date e.g. 1405/06/25 (Persian)">
+                <input type="text" id="evtDateGreg" placeholder="or Gregorian 2026/09/16">
+              </div>
+              <div class="row">
+                <button class="btn-add" onclick="addCountdown()">➕ Add Countdown</button>
+                <button class="btn-danger" onclick="clearAllCountdowns()">🗑️ Clear All</button>
+              </div>
+            </div>
+            <div class="countdown-list" id="countdownList"></div>
+          </div>
+
+          <!-- Study Goals Tracker -->
+          <div class="goals-tracker">
+            <h3>🎯 Study Goals Tracker</h3>
+            <div class="goals-summary">
+              <div class="goal-stat">
+                <div class="gs-val" id="gsWeeklyGoal">0</div>
+                <div class="gs-lbl">Weekly Goal (tasks)</div>
+              </div>
+              <div class="goal-stat">
+                <div class="gs-val" id="gsCompleted">0</div>
+                <div class="gs-lbl">Completed Tasks</div>
+              </div>
+              <div class="goal-stat">
+                <div class="gs-val" id="gsRemaining">0</div>
+                <div class="gs-lbl">Remaining</div>
+              </div>
+              <div class="goal-stat">
+                <div class="gs-val" id="gsSuccessRate">0%</div>
+                <div class="gs-lbl">Success Rate</div>
+              </div>
+            </div>
+            <div class="goal-input-row">
+              <input type="number" id="weeklyGoalInput" placeholder="Set Weekly Task Goal" min="1"
+                onchange="saveWeeklyGoalSetting()">
+              <input type="number" id="monthlyGoalInput" placeholder="Set Monthly Task Goal" min="1"
+                onchange="saveWeeklyGoalSetting()">
+            </div>
+            <div class="progress-bar-wrap">
+              <div class="progress-lbl"><span>Weekly Progress</span><span id="weeklyGoalPct">0%</span></div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="weeklyGoalBar" style="width:0%"></div>
+              </div>
+            </div>
+            <div class="goals-list-section" id="goalsList"></div>
+            <div class="add-goal" onclick="addGoal()">+ Add Goal</div>
+          </div>
+
+          <!-- Monthly Calendar -->
+          <div class="monthly-cal">
+            <h3>📅 Monthly Calendar</h3>
+            <div class="cal-nav">
+              <button onclick="prevMonth()">◀</button>
+              <div class="cal-month-title" id="calMonthTitle">–</div>
+              <button onclick="nextMonth()">▶</button>
+            </div>
+            <div class="cal-grid" id="calDayHeads"></div>
+            <div class="cal-grid" id="calGrid"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Weekly Charts -->
+      <div class="chart-card">
+        <div class="card-header">
+          <h2>📊 Performance Analytics</h2>
+          <span style="color:#667eea;font-size:.9rem;">Efficiency &amp; Distribution</span>
+        </div>
+        <div class="percentage-inputs" id="percentageInputs"></div>
+        <button class="update-chart" onclick="updateWeeklyChart()">🔄 Update All Charts</button>
+        <h3 style="color:#1a3b5d;margin-bottom:4px;">📊 Subject Efficiency</h3>
+        <div class="chart-container"><canvas id="weeklyChart"></canvas></div>
+      </div>
+      <div class="weekly-pie-section">
+        <h3>🥧 Efficiency Distribution</h3>
+        <div class="weekly-pie-container"><canvas id="weeklyPieChart"></canvas></div>
+      </div>
+      <div class="progress-section">
+        <div class="progress-header-with-input">
+          <h3>📈 Overall Progress</h3>
+          <div class="target-input">
+            <label>Study Target:</label>
+            <input type="number" id="studyTargetHours" min="1" max="200" value="40" onchange="updateProgress()">
+            <span style="font-size:.9rem;color:#666;">hrs/week</span>
+          </div>
+        </div>
+        <div class="progress-item">
+          <div class="progress-header"><span>Weekly Goal Completion</span><span id="goalPercentage">0%</span></div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="goalProgress" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="progress-item">
+          <div class="progress-header"><span>Study Hours Progress</span><span id="hoursPercentage">0%</span></div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="hoursProgress" style="width:0%"></div>
+          </div>
+        </div>
+        <h4 style="color:#1a3b5d;margin:18px 0 8px;">📋 Weekly Goals</h4>
+        <div class="goals-list" id="goalsListWeekly"></div>
+        <div class="add-goal" onclick="addWeeklyGoal()">+ Add Goal</div>
+      </div>
+      <div class="notes-section">
+        <h2 style="color:#1a3b5d;display:flex;align-items:center;gap:10px;">📝 Weekly Notes</h2>
+        <div class="notes-grid">
+          <div class="note-item">
+            <h3>📌 Priorities</h3><textarea id="priorityNote" placeholder="Most important tasks..."></textarea>
+          </div>
+          <div class="note-item">
+            <h3>🎯 Goals</h3><textarea id="goalNote" placeholder="Study goals..."></textarea>
+          </div>
+          <div class="note-item">
+            <h3>💡 Clinical Notes</h3><textarea id="clinicalNote" placeholder="Medical notes..."></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Weekly Study Hours Summary -->
+      <div class="study-hours-summary">
+        <h3>⏱️ Weekly Study Hours — <span id="weeklyStudyHoursRangeLabel"
+            style="font-size:.85rem;color:#667eea;font-weight:600;"></span></h3>
+        <div class="study-hours-grid" id="weeklyStudyHoursGrid">
+          <div class="study-hours-empty">No study hours recorded for this week</div>
+        </div>
+        <div class="study-hours-total-row">
+          <span>🗓️ Total Study Hours This Week</span>
+          <span class="total-val" id="weeklyStudyHoursTotal">0h 0m</span>
+        </div>
+        <div class="study-hours-note">Aggregated from all 7 days — tasks with start &amp; end times</div>
+      </div>
+    </div>
+
+    <!-- ======== DAILY TAB ======== -->
+    <div id="dailyTab" class="tab-content">
+      <div class="day-slider-container">
+        <div class="slider-header">
+          <h2 style="color:#1a3b5d;">📋 Daily Planner</h2>
+          <div class="slider-controls">
+            <button class="slider-btn" onclick="previousDay()" id="prevDayBtn">←</button>
+            <span class="day-indicator" id="currentDayIndicator">Saturday</span>
+            <button class="slider-btn" onclick="nextDay()" id="nextDayBtn">→</button>
+          </div>
+        </div>
+        <div class="daily-schedule">
+          <div class="daily-tasks">
+            <h3>✅ Today's Tasks <span id="dailyDateLabel" style="font-size:.8rem;font-weight:normal;color:#888;"></span>
+            </h3>
+            <div class="daily-todo-list" id="dailyTodoList"></div>
+            <div class="add-daily-todo" onclick="openAddTaskModal()">+ Add Task</div>
+          </div>
+          <div class="daily-stats">
+            <h3>⏱️ Time Distribution</h3>
+            <div class="activity-inputs" id="activityInputs"></div>
+            <div class="add-activity-btn" onclick="addCustomActivity()">+ Add Custom Activity</div>
+            <div class="pie-chart-container"><canvas id="dailyPieChart"></canvas></div>
+          </div>
+        </div>
+      </div>
+      <!-- Daily Study Hours Summary -->
+      <div class="study-hours-summary">
+        <h3>⏱️ Study Hours — <span id="dailyStudyHoursDayLabel"
+            style="font-size:.95rem;font-weight:600;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Today</span>
+        </h3>
+        <div class="study-hours-grid" id="dailyStudyHoursGrid">
+          <div class="study-hours-empty">Add tasks with start & end times to track study hours</div>
+        </div>
+        <div class="study-hours-total-row">
+          <span>🎯 Total Study Hours Today</span>
+          <span class="total-val" id="dailyStudyHoursTotal">0h 0m</span>
+        </div>
+        <div class="study-hours-note">Calculated automatically from task time ranges (start – end)</div>
+      </div>
+
+      <!-- Reset Panel in Daily Tab -->
+      <div class="reset-panel" id="resetPanel" style="display:none;">
+        <h3>🔧 Reset Options</h3>
+        <div class="reset-grid">
+          <button class="reset-btn reset-day" onclick="resetCurrentDay()">🗑️ Reset Today</button>
+          <button class="reset-btn reset-week" onclick="resetCurrentWeek()">🗑️ Reset This Week</button>
+          <button class="reset-btn reset-month" onclick="resetCurrentMonth()">🗑️ Reset This Month</button>
+          <button class="reset-btn factory-reset" onclick="factoryReset()">⚠️ Factory Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== ANALYTICS TAB ======== -->
+    <div id="analyticsTab" class="tab-content">
+      <div class="chart-card">
+        <div class="card-header">
+          <h2>📊 Subject Analytics</h2>
+          <span style="color:#667eea;font-size:.9rem;">Based on task data</span>
+        </div>
+        <div class="analytics-grid">
+          <div class="analytics-card">
+            <h4>📚 Total Tasks Per Subject</h4>
+            <div class="analytics-chart-wrap"><canvas id="subjectTotalChart"></canvas></div>
+          </div>
+          <div class="analytics-card">
+            <h4>✅ Completed Tasks Per Subject</h4>
+            <div class="analytics-chart-wrap"><canvas id="subjectCompletedChart"></canvas></div>
+          </div>
+          <div class="analytics-card">
+            <h4>📈 Completion Rate % Per Subject</h4>
+            <div class="analytics-chart-wrap"><canvas id="subjectRateChart"></canvas></div>
+          </div>
+          <div class="analytics-card">
+            <h4>📊 Subject Distribution (Share of Tasks)</h4>
+            <div class="analytics-chart-wrap"><canvas id="subjectDistChart"></canvas></div>
+          </div>
+        </div>
+        <div class="analytics-card" style="margin-top:16px;">
+          <h4>📈 Weekly Study Trend (Sat → Fri)</h4>
+          <div style="height:200px;"><canvas id="trendChart"></canvas></div>
+        </div>
+        <div
+          style="background:linear-gradient(135deg,#667eea,#764ba2);border-radius:20px;padding:22px;color:white;margin-top:20px;">
+          <h4 style="margin-bottom:12px;">💡 Study Insights</h4>
+          <div id="aiInsights">
+            <p>• Complete more tasks to see personalized insights.</p>
+            <p>• Use the Subject tasks to track your progress per subject.</p>
+            <p>• Set weekly goals to measure your success rate.</p>
+          </div>
+        </div>
+
+        <!-- NEW: Study hours per day of week -->
+        <div class="analytics-new-card">
+          <h4>🕐 Study Hours Per Day of Week (Current Week)</h4>
+          <div style="height:240px;position:relative;"><canvas id="dailyStudyHoursChart"></canvas></div>
+        </div>
+
+        <!-- NEW: Monthly study hours by week -->
+        <div class="analytics-new-card">
+          <h4>📆 Monthly Study Hours by Week (Last 4 Weeks)</h4>
+          <div style="height:240px;position:relative;"><canvas id="monthlyWeeklyHoursChart"></canvas></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ======== YEAR PLANNER TAB ======== -->
+    <div id="yearplanTab" class="tab-content">
+      <div class="year-planner-container">
+        <!-- Month names updated by JS based on cal mode -->
+        <div id="yearPlannerContent"></div>
+        <div
+          style="background:white;border-radius:20px;padding:22px;margin-top:24px;box-shadow:0 6px 20px rgba(0,0,0,.1);">
+          <h3 style="color:#1a3b5d;margin-bottom:16px;">📊 Monthly Activity Analysis</h3>
+          <div style="height:260px;"><canvas id="yearPlanChart"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- END .container -->
+
+  <!-- Hours Panel -->
+  <div class="hours-panel-overlay" id="hoursPanelOverlay" onclick="closeHoursPanel(event)">
+    <div class="hours-panel" onclick="event.stopPropagation()">
+      <div class="hours-panel-header">
+        <h2 id="hoursPanelTitle">📅 Day Schedule</h2>
+        <button class="close-panel-btn" onclick="closeHoursPanel()">✕</button>
+      </div>
+      <div class="hours-grid" id="hoursGrid"></div>
+      <div class="hours-panel-footer">
+        <button class="clear-day-btn" onclick="clearDayData()">🗑️ Clear Day</button>
+        <button class="save-day-btn" onclick="saveDayHours()">💾 Save Day</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Task Modal -->
+  <div class="modal-overlay" id="addTaskModal">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>➕ Add Task</h3>
+        <button class="modal-close" onclick="closeAddTaskModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-field">
+          <label>Subject</label>
+          <select id="taskSubjectSel"
+            style="width:100%;padding:10px 14px;border:2px solid #e0e7ff;border-radius:50px;font-size:.9rem;outline:none;"></select>
+        </div>
+        <div class="modal-field">
+          <label>Task Name</label>
+          <input type="text" id="taskNameInput" placeholder="e.g. Chapter 4 review">
+        </div>
+        <div class="modal-row">
+          <div class="modal-field">
+            <label>Start Time</label>
+            <input type="time" id="taskStartTime">
+          </div>
+          <div class="modal-field">
+            <label>End Time</label>
+            <input type="time" id="taskEndTime">
+          </div>
+        </div>
+        <div class="modal-field">
+          <label>Day</label>
+          <select id="taskDaySel"
+            style="width:100%;padding:10px 14px;border:2px solid #e0e7ff;border-radius:50px;font-size:.9rem;outline:none;">
+            <option value="0">Saturday</option>
+            <option value="1">Sunday</option>
+            <option value="2">Monday</option>
+            <option value="3">Tuesday</option>
+            <option value="4">Wednesday</option>
+            <option value="5">Thursday</option>
+            <option value="6">Friday</option>
+          </select>
+        </div>
+        <div class="modal-field">
+          <label>Priority</label>
+          <select id="taskPrioritySel"
+            style="width:100%;padding:10px 14px;border:2px solid #e0e7ff;border-radius:50px;font-size:.9rem;outline:none;">
+            <option value="normal">Normal</option>
+            <option value="high">High</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-danger" onclick="closeAddTaskModal()">Cancel</button>
+        <button class="btn-add" onclick="saveNewTask()">➕ Add Task</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="save-status" id="saveStatus">✅ Saved successfully</div>
+  <script>
+    const GITHUB_TOKEN = localStorage.getItem('gh_token');
+    const GIST_ID = 'e32677bb7521bdf0f105d6c236e2333d';
+
+    // اولین بار توکن رو می‌گیره و ذخیره می‌کنه
+    function setupToken() {
+      const t = prompt('توکن GitHub خودت رو وارد کن:');
+      if (t) localStorage.setItem('gh_token', t);
+      location.reload();
+    }
+
+    async function syncToGithub() {
+      const token = localStorage.getItem('gh_token');
+      if (!token) { setupToken(); return; }
+
+      const data = {
+        drHemmatiPlannerV4: localStorage.getItem('drHemmatiPlannerV4'),
+        calMode: localStorage.getItem('calMode')
+      };
+      const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `token ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          files: { 'data.json': { content: JSON.stringify(data) } }
+        })
+      });
+      if (res.ok) alert('✅ Saved to GitHub!');
+      else {
+        localStorage.removeItem('gh_token');
+        alert('❌ توکن اشتباهه، دوباره وارد کن');
+        setupToken();
+      }
+    }
+
+    async function loadFromGithub() {
+      const res = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+      const gist = await res.json();
+      const data = JSON.parse(gist.files['data.json'].content);
+      if (data.drHemmatiPlannerV4) localStorage.setItem('drHemmatiPlannerV4', data.drHemmatiPlannerV4);
+      if (data.calMode) localStorage.setItem('calMode', data.calMode);
+      location.reload();
+    }
+  </script>
+  <script>
+    // =====================================================
+    // PERSIAN (JALALI) CALENDAR UTILS
+    // =====================================================
+    const PERSIAN_MONTHS = ['Farvardin', 'Ordibehesht', 'Khordad', 'Tir', 'Mordad', 'Shahrivar', 'Mehr', 'Aban', 'Azar', 'Dey', 'Bahman', 'Esfand'];
+    const GREGORIAN_MONTHS = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March'];
+    // Persian month -> Gregorian month index (0-based) mapping:
+    // Farvardin=April(3), Ordibehesht=May(4), Khordad=June(5), Tir=July(6), Mordad=Aug(7), Shahrivar=Sep(8)
+    // Mehr=Oct(9), Aban=Nov(10), Azar=Dec(11), Dey=Jan(0), Bahman=Feb(1), Esfand=Mar(2)
+    const PERSIAN_TO_GREG_MONTH = [3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2]; // 0-based Gregorian month for Persian month index 0..11
+
+    // Jalali to Gregorian conversion
+    function jalaliToGregorian(jy, jm, jd) {
+      const jy2 = jy - 979, jm2 = jm - 1, jd2 = jd - 1;
+      let jDayNo = 365 * jy2 + Math.floor(jy2 / 33) * 8 + Math.floor((jy2 % 33 + 3) / 4);
+      for (let i = 0; i < jm2; i++) jDayNo += [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29][i];
+      jDayNo += jd2;
+      let gDayNo = jDayNo + 79;
+      let gy = 1600 + 400 * Math.floor(gDayNo / 146097); gDayNo %= 146097;
+      let leap = true;
+      if (gDayNo >= 36525) { gDayNo++; gy += 100 * Math.floor(gDayNo / 36524); gDayNo %= 36524; if (gDayNo >= 365) { gDayNo++; } else { leap = false; } }
+      gy += 4 * Math.floor(gDayNo / 1461); gDayNo %= 1461;
+      if (gDayNo >= 366) { leap = false; gDayNo--; gy += Math.floor(gDayNo / 365); gDayNo %= 365; }
+      const gMonthLen = [31, 29 - (!leap ? 1 : 0), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      let gm = 0;
+      for (; gm < 12; gm++) { if (gDayNo < gMonthLen[gm]) break; gDayNo -= gMonthLen[gm]; }
+      return [gy, gm + 1, gDayNo + 1];
+    }
+
+    // Gregorian to Jalali
+    function gregorianToJalali(gy, gm, gd) {
+      const g_d_no = [0, 31, 59 + (gy % 4 == 0 && (gy % 100 != 0 || gy % 400 == 0) ? 1 : 0), 90 + (gy % 4 == 0 && (gy % 100 != 0 || gy % 400 == 0) ? 1 : 0)];
+      let g_days = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      if (gy % 4 == 0 && (gy % 100 != 0 || gy % 400 == 0)) g_days[2] = 29;
+      let jy = gy - 1600, jm, jd;
+      let g_day_no = 365 * jy + Math.floor(jy / 4) - Math.floor(jy / 100) + Math.floor(jy / 400);
+      for (let i = 0; i < gm - 1; i++) g_day_no += g_days[i + 1];
+      g_day_no += gd - 1;
+      let j_day_no = g_day_no - 79;
+      let j_np = Math.floor(j_day_no / 12053); j_day_no %= 12053;
+      jy = 979 + 33 * j_np + 4 * Math.floor(j_day_no / 1461);
+      j_day_no %= 1461;
+      if (j_day_no >= 366) { jy += Math.floor((j_day_no - 1) / 365); j_day_no = (j_day_no - 1) % 365; }
+      const j_days_in_month = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29];
+      for (jm = 0; jm < 11 && j_day_no >= j_days_in_month[jm]; jm++) j_day_no -= j_days_in_month[jm];
+      jd = j_day_no + 1;
+      return [jy, jm + 1, jd];
+    }
+
+    function todayJalali() {
+      const d = new Date();
+      return gregorianToJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    }
+
+    function parseDate(str) {
+      // Accepts "1405/03/18" or "2026/06/08"
+      if (!str) return null;
+      const p = str.trim().split('/');
+      if (p.length !== 3) return null;
+      return [parseInt(p[0]), parseInt(p[1]), parseInt(p[2])];
+    }
+
+    function persianToGreg(str) {
+      const p = parseDate(str);
+      if (!p) return null;
+      const g = jalaliToGregorian(p[0], p[1], p[2]);
+      return new Date(g[0], g[1] - 1, g[2]);
+    }
+
+    function gregToDate(str) {
+      const p = parseDate(str);
+      if (!p) return null;
+      return new Date(p[0], p[1] - 1, p[2]);
+    }
+
+    function daysLeft(dateStr, isPersian) {
+      let d = isPersian ? persianToGreg(dateStr) : gregToDate(dateStr);
+      if (!d) return NaN;
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      d.setHours(0, 0, 0, 0);
+      return Math.ceil((d - now) / 86400000);
+    }
+
+    // =====================================================
+    // GLOBAL STATE
+    // =====================================================
+    let calMode = 'persian'; // 'persian' | 'gregorian'
+    let weeklyChart = null, weeklyPieChart = null, dailyPieChart = null, trendChart = null;
+    let subjectTotalChart = null, subjectCompletedChart = null, subjectRateChart = null, subjectDistChart = null;
+    let dailyStudyHoursChart = null, monthlyWeeklyHoursChart = null;
+    let currentDay = 0;
+    const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+    let weeklyGoals = [];
+    let weeklyGoalsWeekly = [];
+    let dailyData = {};
+    let customActivities = {};
+    let yearPlanData = {};
+    let countdowns = [];
+    let currentPanelKey = null;
+    let monthlyTasksData = {};
+    let weekOffset = 0;
+    let weekScheduleStore = {};
+    let calViewYear, calViewMonth; // display state for monthly calendar
+
+    const colorPalette = ['#667eea', '#764ba2', '#dc3545', '#ffc107', '#28a745', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#17a2b8', '#6610f2', '#d63384', '#ff6b6b', '#4ecdc4', '#45b7d1'];
+
+    const defaultSubjects = [
+      { name: 'Anatomy', icon: '🦴' }, { name: 'Physiology', icon: '❤️' }, { name: 'Pathology', icon: '🔬' },
+      { name: 'Pharmacology', icon: '💊' }, { name: 'Microbiology', icon: '🦠' }, { name: 'Immunology', icon: '🛡️' }
+    ];
+
+    // =====================================================
+    // CALENDAR MODE
+    // =====================================================
+    function setCalMode(mode) {
+      const oldMode = calMode;
+
+      if (oldMode !== mode) {
+
+        if (mode === 'gregorian') {
+          // Persian -> Gregorian
+          if (calViewYear < 1700) {
+            calViewYear += 621;
+          }
+
+        } else {
+          // Gregorian -> Persian
+          if (calViewYear > 1700) {
+            calViewYear -= 621;
+          }
+        }
+
+      }
+      calMode = mode;
+      document.getElementById('btnPersian').classList.toggle('active', mode === 'persian');
+      document.getElementById('btnGregorian').classList.toggle('active', mode === 'gregorian');
+      renderTodayDisplay();
+      renderMonthlyCalendar();
+      renderYearPlanner();
+      renderCountdowns();
+      updateStats();
+      localStorage.setItem('calMode', mode);
+    }
+
+    function getMonthNames() {
+      return calMode === 'persian' ? PERSIAN_MONTHS : GREGORIAN_MONTHS;
+    }
+
+    function renderTodayDisplay() {
+      const now = new Date();
+      const gy = now.getFullYear(), gm = now.getMonth() + 1, gd = now.getDate();
+      const [jy, jm, jd] = gregorianToJalali(gy, gm, gd);
+      const weekDay = now.toLocaleDateString('en-US', { weekday: 'long' });
+      document.getElementById('todayLabel').textContent = weekDay;
+      document.getElementById('todayPersian').textContent = `${jy}/${String(jm).padStart(2, '0')}/${String(jd).padStart(2, '0')}`;
+      document.getElementById('todayGregorian').textContent = `${gy}/${String(gm).padStart(2, '0')}/${String(gd).padStart(2, '0')}`;
+    }
+
+    // =====================================================
+    // SCHEDULE GRID
+    // =====================================================
+    function generateSchedule() {
+      const cont = document.getElementById('scheduleRows');
+      cont.innerHTML = '';
+      for (let h = 0; h < 24; h++) {
+        const row = document.createElement('div');
+        row.className = 'time-row';
+        const lbl = document.createElement('div');
+        lbl.className = 'time-label';
+        const ampm = h < 12 ? (h === 0 ? '12AM' : `${h}AM`) : (h === 12 ? '12PM' : `${h - 12}PM`);
+        lbl.textContent = ampm;
+        row.appendChild(lbl);
+        for (let d = 0; d < 7; d++) {
+          const cell = document.createElement('div');
+          cell.className = 'day-cell';
+          const inp = document.createElement('input');
+          inp.type = 'text';
+          inp.placeholder = '...';
+          inp.dataset.hour = h;
+          inp.dataset.day = d;
+          inp.addEventListener('change', debounce(autoSave, 800));
+          cell.appendChild(inp);
+          row.appendChild(cell);
+        }
+        cont.appendChild(row);
+      }
+    }
+
+    // =====================================================
+    // SUBJECTS
+    // =====================================================
+    function addNewSubject() {
+
+      const name = prompt('Enter subject name:');
+      if (!name || !name.trim()) return;
+
+      const icon = prompt('Enter icon (example: 🫀 🧠 🦴 🧪 💊)', '📘') || '📘';
+
+      addSubjectToDOM(name.trim(), [], icon);
+
+      updateStats();
+      autoSave();
+    }
+    function quickAddSubject() { addNewSubject(); }
+
+    function addSubjectToDOM(name, tasks = [], icon = null) {
+      const cont = document.getElementById('subjectsList');
+      const item = document.createElement('div');
+      item.className = 'subject-item';
+      item.dataset.name = name;
+      item.dataset.icon = icon || getSubjectIcon(name);
+      item.innerHTML = `
+    <div class="subject-header">
+      <div class="subject-title">
+        <span class="subject-icon"
+      onclick="
+      const i=prompt('New icon:',this.textContent);
+      if(i){this.textContent=i;
+      this.closest('.subject-item').dataset.icon=i;
+      autoSave();}
+      ">
+  ${icon || getSubjectIcon(name)}
+</span>
+        <input type="text" value="${escHtml(name)}" onchange="this.closest('.subject-item').dataset.name=this.value;refreshSubjectDropdown();updateStats();autoSave();">
+      </div>
+      <span class="delete-subject" onclick="if(confirm('Delete this subject?')){this.closest('.subject-item').remove();updateStats();autoSave();refreshSubjectDropdown();}">🗑️</span>
+    </div>
+    <div class="todo-list"></div>
+    <div class="add-todo" onclick="addTaskToSubject(this)">+ Add Task</div>
+  `;
+      cont.appendChild(item);
+      tasks.forEach(t => addTaskItem(item.querySelector('.todo-list'), t.text, t.checked, t.priority));
+      addPercentageInput(name);
+      refreshSubjectDropdown();
+      updateStats();
+    }
+
+    function getSubjectIcon(n) {
+      const m = { 'anatomy': '🦴', 'physiology': '❤️', 'pathology': '🔬', 'pharmacology': '💊', 'microbiology': '🦠', 'immunology': '🛡️', 'biochemistry': '🧪', 'neurology': '🧠', 'surgery': '🔧', 'internal': '🏥' };
+      return m[n.toLowerCase()] || '📘';
+    }
+
+    function addTaskToSubject(addBtn) {
+      const list = addBtn.previousElementSibling;
+      addTaskItem(list, '', false, 'normal');
+      updateStats(); autoSave();
+    }
+
+    function addTaskItem(list, text, checked, priority) {
+      const item = document.createElement('div');
+      item.className = 'todo-item';
+      item.innerHTML = `
+    <input type="checkbox" ${checked ? 'checked' : ''} onchange="updateStats();autoSave();">
+    <input type="text" value="${escHtml(text)}" placeholder="Task name..." onchange="updateStats();autoSave();">
+    <select class="todo-priority" onchange="autoSave();">
+      <option value="normal" ${priority === 'normal' ? 'selected' : ''}>Normal</option>
+      <option value="high" ${priority === 'high' ? 'selected' : ''}>🔴 High</option>
+      <option value="low" ${priority === 'low' ? 'selected' : ''}>🟢 Low</option>
+    </select>
+    <span class="delete-task" onclick="this.closest('.todo-item').remove();updateStats();autoSave();">🗑️</span>
+  `;
+      list.appendChild(item);
+    }
+
+    function addPercentageInput(name) {
+      const cont = document.getElementById('percentageInputs');
+      const item = document.createElement('div');
+      item.className = 'percentage-item';
+      item.innerHTML = `<label data-subject="${escHtml(name)}">${escHtml(name)}</label><input type="number" min="0" max="100" value="0" data-subject="${escHtml(name)}" onchange="autoSave();">%`;
+      cont.appendChild(item);
+    }
+
+    function refreshSubjectDropdown() {
+      const sel = document.getElementById('taskSubjectSel');
+      if (!sel) return;
+      const subjects = [];
+      document.querySelectorAll('.subject-item').forEach(s => subjects.push(s.dataset.name));
+      sel.innerHTML = '<option value="">— No Subject —</option>' + subjects.map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('');
+    }
+
+    // =====================================================
+    // DAILY PLANNER TASKS
+    // =====================================================
+    function updateDayDisplay() {
+      document.getElementById('currentDayIndicator').textContent = DAYS[currentDay];
+      document.getElementById('prevDayBtn').disabled = currentDay === 0;
+      document.getElementById('nextDayBtn').disabled = currentDay === 6;
+      // Show date label
+      const now = new Date();
+      const dayDiff = currentDay - (now.getDay() + 1) % 7;
+      const dl = document.getElementById('dailyDateLabel');
+      const targetDate = new Date(now);
+      targetDate.setDate(now.getDate() + dayDiff);
+      const [jy2, jm2, jd2] = gregorianToJalali(targetDate.getFullYear(), targetDate.getMonth() + 1, targetDate.getDate());
+      dl.textContent = calMode === 'persian'
+        ? `${jy2}/${String(jm2).padStart(2, '0')}/${String(jd2).padStart(2, '0')}`
+        : `${targetDate.getFullYear()}/${String(targetDate.getMonth() + 1).padStart(2, '0')}/${String(targetDate.getDate()).padStart(2, '0')}`;
+      loadDailyTasks();
+      loadCustomActivities();
+      updateDailyPieChart();
+      renderDailyStudyHours();
+    }
+    function previousDay() { if (currentDay > 0) { currentDay--; updateDayDisplay(); } }
+    function nextDay() { if (currentDay < 6) { currentDay++; updateDayDisplay(); } }
+
+    function addDailyTodo(subjectName, taskName, startTime, endTime, skipSave = false) {
+      const cont = document.getElementById('dailyTodoList');
+      const item = document.createElement('div');
+      item.className = 'daily-todo-item';
+      const subjects = [];
+      document.querySelectorAll('.subject-item').forEach(s => subjects.push(s.dataset.name));
+      const subjectOpts = ['— No Subject —', ...subjects].map(s => `<option value="${escHtml(s)}" ${s === subjectName ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
+      item.innerHTML = `
+    <input type="checkbox" onchange="saveDailyData();updateStats();">
+    <select class="task-subject-sel" style="background:#e8f0fe;border:none;padding:4px 8px;border-radius:20px;font-size:.78rem;outline:none;">${subjectOpts}</select>
+    <input type="text" placeholder="Task name..." value="${escHtml(taskName || '')}">
+    <span class="time-range">${startTime || ''}${startTime && endTime ? ' – ' : ''}${endTime || ''}</span>
+    <select onchange="saveDailyData()">
+      <option value="normal">Normal</option><option value="high">🔴 High</option><option value="low">🟢 Low</option>
+    </select>
+    <span class="delete-dtask" onclick="this.closest('.daily-todo-item').remove();saveDailyData();updateStats();">🗑️</span>
+  `;
+      cont.appendChild(item);
+      if (!skipSave) { saveDailyData(); updateStats(); }
+    }
+
+    function saveDailyData() {
+      const key = `day_${currentDay}`;
+      const tasks = [];
+      document.querySelectorAll('#dailyTodoList .daily-todo-item').forEach(item => {
+        const cb = item.querySelector('input[type="checkbox"]');
+        const tx = item.querySelector('input[type="text"]');
+        const subSel = item.querySelector('.task-subject-sel');
+        const prSel = item.querySelector('select:last-of-type');
+        const tr = item.querySelector('.time-range');
+        tasks.push({ checked: cb ? cb.checked : false, text: tx ? tx.value : '', subject: subSel ? subSel.value : '', priority: prSel ? prSel.value : 'normal', timeRange: tr ? tr.textContent : '' });
+      });
+      dailyData[key] = tasks;
+      autoSave();
+      updateStats();
+      renderDailyStudyHours();
+      renderWeeklyStudyHours();
+    }
+
+    function loadDailyTasks() {
+      const cont = document.getElementById('dailyTodoList');
+      cont.innerHTML = '';
+      const key = `day_${currentDay}`;
+      const tasks = dailyData[key] || [];
+      tasks.forEach(t => {
+        addDailyTodo(t.subject || '', t.text, t.timeRange || '', null, true);
+        const items = cont.querySelectorAll('.daily-todo-item');
+        const last = items[items.length - 1];
+        if (last) {
+          const cb = last.querySelector('input[type="checkbox"]');
+          if (cb) cb.checked = t.checked;
+          const pr = last.querySelector('select:last-of-type');
+          if (pr) pr.value = t.priority || 'normal';
+        }
+      });
+    }
+
+    // =====================================================
+    // ADD TASK MODAL
+    // =====================================================
+    function openAddTaskModal() {
+      refreshSubjectDropdown();
+      document.getElementById('taskNameInput').value = '';
+      document.getElementById('taskStartTime').value = '';
+      document.getElementById('taskEndTime').value = '';
+      document.getElementById('taskDaySel').value = currentDay;
+      document.getElementById('addTaskModal').classList.add('open');
+    }
+    function closeAddTaskModal() { document.getElementById('addTaskModal').classList.remove('open'); }
+
+    function saveNewTask() {
+      const subject = document.getElementById('taskSubjectSel').value;
+      const name = document.getElementById('taskNameInput').value.trim();
+      const start = document.getElementById('taskStartTime').value;
+      const end = document.getElementById('taskEndTime').value;
+      const day = parseInt(document.getElementById('taskDaySel').value);
+      const priority = document.getElementById('taskPrioritySel').value;
+      if (!name) { alert('Please enter a task name.'); return; }
+      // Save to daily data
+      const prevDay = currentDay;
+      currentDay = day;
+      const key = `day_${day}`;
+      if (!dailyData[key]) dailyData[key] = [];
+      dailyData[key].push({ checked: false, text: name, subject, priority, timeRange: start && end ? `${start} – ${end}` : start || '' });
+      if (currentDay === day) {
+        addDailyTodo(subject, name, start, end);
+        const items = document.querySelectorAll('#dailyTodoList .daily-todo-item');
+        const last = items[items.length - 1];
+        if (last) {
+          const pr = last.querySelector('select:last-of-type');
+          if (pr) pr.value = priority;
+        }
+      }
+      currentDay = prevDay;
+      // Also add to schedule
+      if (start) {
+        const h = parseInt(start.split(':')[0]);
+        const inp = document.querySelector(`.day-cell input[data-hour="${h}"][data-day="${day}"]`);
+        if (inp && !inp.value) inp.value = `${subject ? subject + ': ' : ''}${name}`;
+      }
+      autoSave();
+      updateStats();
+      closeAddTaskModal();
+      showSaveStatus();
+    }
+
+    // =====================================================
+    // COUNTDOWN
+    // =====================================================
+    function addCountdown() {
+      const name = document.getElementById('evtName').value.trim();
+      const datePersian = document.getElementById('evtDatePersian').value.trim();
+      const dateGreg = document.getElementById('evtDateGreg').value.trim();
+      if (!name) { alert('Please enter a name.'); return; }
+      if (!datePersian && !dateGreg) { alert('Please enter a date.'); return; }
+      const entry = { name, datePersian: datePersian || '', dateGreg: dateGreg || '' };
+      countdowns.push(entry);
+      document.getElementById('evtName').value = '';
+      document.getElementById('evtDatePersian').value = '';
+      document.getElementById('evtDateGreg').value = '';
+      renderCountdowns();
+      autoSave();
+    }
+
+    function renderCountdowns() {
+      const box = document.getElementById('countdownList');
+      if (!box) return;
+      if (!countdowns.length) { box.innerHTML = '<div style="text-align:center;color:#aaa;padding:12px;font-size:.9rem;">No countdowns yet. Add your first exam!</div>'; return; }
+      box.innerHTML = '';
+      countdowns.forEach((e, i) => {
+        const dateStr = e.datePersian || e.dateGreg;
+        const isPersian = !!e.datePersian;
+        const dl = daysLeft(dateStr, isPersian);
+        let cls = '', dayCls = '';
+        if (!isNaN(dl)) {
+          if (dl <= 7) { cls = 'urgent'; dayCls = 'urgent'; }
+          else if (dl <= 30) { cls = 'soon'; dayCls = 'soon'; }
+        }
+        const displayDate = calMode === 'persian' ? (e.datePersian || e.dateGreg) : (e.dateGreg || e.datePersian);
+        const daysText = isNaN(dl) ? 'Invalid date' : (dl < 0 ? `${Math.abs(dl)} days ago` : `${dl} days left`);
+        const div = document.createElement('div');
+        div.className = `countdown-item ${cls}`;
+        div.innerHTML = `
+      <div>
+        <div class="countdown-name">${escHtml(e.name)}</div>
+        <div class="countdown-meta">📅 ${escHtml(displayDate)}</div>
+      </div>
+      <div class="countdown-days ${dayCls}">${daysText}</div>
+      <div class="countdown-actions">
+        <button onclick="editCountdown(${i})" title="Edit">✏️</button>
+        <button onclick="deleteCountdown(${i})" title="Delete">🗑️</button>
+      </div>
+    `;
+        box.appendChild(div);
+      });
+    }
+
+    function editCountdown(i) {
+      const e = countdowns[i];
+      const newName = prompt('Event name:', e.name);
+      if (newName === null) return;
+      const newDateP = prompt('Persian date (e.g. 1405/06/25):', e.datePersian || '');
+      const newDateG = prompt('Gregorian date (e.g. 2026/09/16):', e.dateGreg || '');
+      countdowns[i] = { name: newName, datePersian: newDateP || '', dateGreg: newDateG || '' };
+      renderCountdowns(); autoSave();
+    }
+
+    function deleteCountdown(i) {
+      if (confirm('Delete this countdown?')) { countdowns.splice(i, 1); renderCountdowns(); autoSave(); }
+    }
+
+    function clearAllCountdowns() {
+      if (confirm('Clear all countdowns?')) { countdowns = []; renderCountdowns(); autoSave(); }
+    }
+
+    // =====================================================
+    // GOALS
+    // =====================================================
+    function saveWeeklyGoalSetting() {
+      updateGoalStats(); autoSave();
+    }
+
+    function addGoal() {
+      const cont = document.getElementById('goalsList');
+      const item = document.createElement('div');
+      item.className = 'goal-item';
+      item.innerHTML = `<input type="checkbox" onchange="updateGoalStats();autoSave();"><input type="text" placeholder="Goal..." onchange="updateGoalStats();autoSave();"><span class="delete-goal" onclick="this.closest('.goal-item').remove();updateGoalStats();autoSave();">🗑️</span>`;
+      cont.appendChild(item);
+    }
+
+    function addWeeklyGoal() {
+      const cont = document.getElementById('goalsListWeekly');
+      const item = document.createElement('div');
+      item.className = 'goal-item';
+      item.innerHTML = `<input type="checkbox" onchange="updateProgress();autoSave();"><input type="text" placeholder="Goal..." onchange="autoSave();"><span class="delete-goal" onclick="this.closest('.goal-item').remove();updateProgress();autoSave();">🗑️</span>`;
+      cont.appendChild(item);
+    }
+
+    function addGoalItem(text, checked, inWeekly = false) {
+      const contId = inWeekly ? 'goalsListWeekly' : 'goalsList';
+      const cont = document.getElementById(contId);
+      if (!cont) return;
+      const item = document.createElement('div');
+      item.className = 'goal-item';
+      item.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} onchange="${inWeekly ? 'updateProgress()' : 'updateGoalStats()'};autoSave();"><input type="text" value="${escHtml(text)}" onchange="autoSave();"><span class="delete-goal" onclick="this.closest('.goal-item').remove();${inWeekly ? 'updateProgress()' : 'updateGoalStats()'};autoSave();">🗑️</span>`;
+      cont.appendChild(item);
+    }
+
+    function updateGoalStats() {
+      const weekGoal = parseInt(document.getElementById('weeklyGoalInput').value) || 0;
+      const monthGoal = parseInt(document.getElementById('monthlyGoalInput').value) || 0;
+      let completed = 0, total = 0;
+      document.querySelectorAll('.todo-item input[type="checkbox"]').forEach(cb => { total++; if (cb.checked) completed++; });
+      // also daily tasks
+      Object.values(dailyData).forEach(tasks => tasks.forEach(t => { total++; if (t.checked) completed++; }));
+      // deduplicate rough estimate
+      const remaining = Math.max(0, (weekGoal || total) - completed);
+      const rate = total > 0 ? Math.round(completed / total * 100) : 0;
+      document.getElementById('gsWeeklyGoal').textContent = weekGoal || '–';
+      document.getElementById('gsCompleted').textContent = completed;
+      document.getElementById('gsRemaining').textContent = remaining;
+      document.getElementById('gsSuccessRate').textContent = rate + '%';
+      const pct = weekGoal ? Math.min(100, Math.round(completed / weekGoal * 100)) : rate;
+      document.getElementById('weeklyGoalPct').textContent = pct + '%';
+      document.getElementById('weeklyGoalBar').style.width = pct + '%';
+      updateProgress();
+    }
+
+    // =====================================================
+    // PROGRESS
+    // =====================================================
+    function updateProgress() {
+      const goals = document.querySelectorAll('#goalsListWeekly .goal-item');
+      let completed = 0;
+      goals.forEach(g => { if (g.querySelector('input[type="checkbox"]').checked) completed++; });
+      const pct = goals.length > 0 ? Math.round(completed / goals.length * 100) : 0;
+      document.getElementById('goalPercentage').textContent = pct + '%';
+      document.getElementById('goalProgress').style.width = pct + '%';
+      const targetHrs = parseInt(document.getElementById('studyTargetHours').value) || 40;
+      const curHrs = parseInt(document.getElementById('totalStudyHours').textContent) || 0;
+      const hpct = Math.min(100, Math.round(curHrs / targetHrs * 100));
+      document.getElementById('hoursPercentage').textContent = hpct + '%';
+      document.getElementById('hoursProgress').style.width = hpct + '%';
+      document.getElementById('overallProgress').textContent = Math.round((pct + hpct) / 2) + '% Overall';
+    }
+
+    // =====================================================
+    // STATS
+    // =====================================================
+    function updateStats() {
+      const subjects = document.querySelectorAll('.subject-item').length;
+      document.getElementById('totalSubjects').textContent = subjects;
+      document.getElementById('headerSubjectCount').textContent = subjects + ' Subjects';
+      let completed = 0, total = 0;
+      document.querySelectorAll('.todo-item').forEach(item => {
+        total++;
+        if (item.querySelector('input[type="checkbox"]').checked) completed++;
+      });
+      document.getElementById('completedTasks').textContent = completed;
+      let totalHrs = 0;
+      for (let i = 0; i < 7; i++) { const tasks = (dailyData[`day_${i}`] || []); totalHrs += tasks.length; }
+      document.getElementById('totalStudyHours').textContent = totalHrs;
+      let totalPct = 0, cnt = 0;
+      document.querySelectorAll('.percentage-item input').forEach(inp => { totalPct += parseInt(inp.value) || 0; cnt++; });
+      document.getElementById('avgEfficiency').textContent = (cnt > 0 ? Math.round(totalPct / cnt) : 0) + '%';
+      updateGoalStats();
+      updateProgress();
+      updateAnalyticsCharts();
+    }
+
+    // =====================================================
+    // MONTHLY CALENDAR
+    // =====================================================
+    function initCalendarView() {
+      const now = new Date();
+      if (calMode === 'persian') {
+        const [jy, jm] = gregorianToJalali(now.getFullYear(), now.getMonth() + 1, now.getDate());
+        calViewYear = jy; calViewMonth = jm;
+      } else {
+        calViewYear = now.getFullYear(); calViewMonth = now.getMonth() + 1;
+      }
+      renderMonthlyCalendar();
+    }
+
+    function prevMonth() {
+      calViewMonth--;
+      if (calMode === 'persian') { if (calViewMonth < 1) { calViewMonth = 12; calViewYear--; } }
+      else { if (calViewMonth < 1) { calViewMonth = 12; calViewYear--; } }
+      renderMonthlyCalendar();
+    }
+    function nextMonth() {
+      calViewMonth++;
+      if (calMode === 'persian') { if (calViewMonth > 12) { calViewMonth = 1; calViewYear++; } }
+      else { if (calViewMonth > 12) { calViewMonth = 1; calViewYear++; } }
+      renderMonthlyCalendar();
+    }
+
+    function renderMonthlyCalendar() {
+      const headEl = document.getElementById('calDayHeads');
+      const gridEl = document.getElementById('calGrid');
+      if (!headEl || !gridEl) return;
+      const dayNames = ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+      headEl.innerHTML = dayNames.map(d => `<div class="cal-day-head">${d}</div>`).join('');
+
+      if (calMode === 'persian') {
+        renderPersianCalendar(gridEl);
+      } else {
+        renderGregorianCalendar(gridEl);
+      }
+    }
+
+    function renderPersianCalendar(gridEl) {
+      const now = new Date();
+      const [ty, tm, td] = gregorianToJalali(now.getFullYear(), now.getMonth() + 1, now.getDate());
+      const daysInMonth = calViewMonth <= 6 ? 31 : calViewMonth <= 11 ? 30 : 29;
+      // Find day of week for first day
+      const [fy, fm, fd] = jalaliToGregorian(calViewYear, calViewMonth, 1);
+      const firstDate = new Date(fy, fm - 1, fd);
+      let firstDow = (firstDate.getDay() + 1) % 7; // 0=Sat
+      document.getElementById('calMonthTitle').textContent = `${PERSIAN_MONTHS[calViewMonth - 1]} ${calViewYear}`;
+      gridEl.innerHTML = '';
+      for (let i = 0; i < firstDow; i++) {
+        const el = document.createElement('div'); el.className = 'cal-day empty'; gridEl.appendChild(el);
+      }
+      for (let d = 1; d <= daysInMonth; d++) {
+        const el = document.createElement('div'); el.className = 'cal-day';
+        el.textContent = d;
+        const key = `m${calViewMonth}d${d}`;
+        const isToday = (ty === calViewYear && tm === calViewMonth && td === d);
+        if (isToday) el.classList.add('today');
+        if (yearPlanData[key] && Object.values(yearPlanData[key]).some(v => v && v.trim() !== '')) el.classList.add('has-tasks');
+        el.onclick = () => { openDayFromCalendar(calViewMonth, d); };
+        gridEl.appendChild(el);
+      }
+    }
+
+    function renderGregorianCalendar(gridEl) {
+      const now = new Date();
+      const gregMonth = PERSIAN_TO_GREG_MONTH[calViewMonth - 1]; // 0-based
+      // Determine actual Gregorian year from Persian year
+      let gregYear = calViewYear;
+      // Rough: if calViewMonth <= 9 (Mehr), add 621. Dey(10)=Jan of next year, etc.
+      // Actually let's compute from Persian context
+      // We map: Persian month 1-9 → Gregorian months Apr-Dec of (Py+621), month 10-12 → Jan-Mar of (Py+622)
+      if (calMode === 'gregorian') {
+        // Just use raw calViewYear/calViewMonth as Gregorian
+        const firstDate = new Date(calViewYear, calViewMonth - 1, 1);
+        const daysInMonth = new Date(calViewYear, calViewMonth, 0).getDate();
+        let firstDow = (firstDate.getDay() + 1) % 7;
+        document.getElementById('calMonthTitle').textContent = `${firstDate.toLocaleString('en-US', { month: 'long' })} ${calViewYear}`;
+        gridEl.innerHTML = '';
+        for (let i = 0; i < firstDow; i++) { const el = document.createElement('div'); el.className = 'cal-day empty'; gridEl.appendChild(el); }
+        for (let d = 1; d <= daysInMonth; d++) {
+          const el = document.createElement('div'); el.className = 'cal-day'; el.textContent = d;
+          // Convert this greg date to persian to find key
+          const [jy, jm, jd] = gregorianToJalali(calViewYear, calViewMonth, d);
+          const key = `m${jm}d${jd}`;
+          const isToday = (now.getFullYear() === calViewYear && now.getMonth() + 1 === calViewMonth && now.getDate() === d);
+          if (isToday) el.classList.add('today');
+          if (yearPlanData[key] && Object.values(yearPlanData[key]).some(v => v && v.trim() !== '')) el.classList.add('has-tasks');
+          el.onclick = () => {
+            // Convert to persian and open
+            openDayFromCalendar(jm, jd);
+          };
+          gridEl.appendChild(el);
+        }
+      }
+    }
+
+    function openDayFromCalendar(persianMonth, persianDay) {
+      const [gy, gm, gd] = jalaliToGregorian(calViewYear, persianMonth, persianDay);
+      const dateObj = new Date(gy, gm - 1, gd);
+      currentDay = (dateObj.getDay() + 1) % 7; // Sat=0, Sun=1, ..., Fri=6
+      switchTab('daily');
+    }
+
+    // =====================================================
+    // YEAR PLANNER
+    // =====================================================
+    const SEASON_CONFIGS = [
+      { name: '🌸 Spring — بهار', cls: 'season-spring', months: [1, 2, 3] },
+      { name: '☀️ Summer — تابستان', cls: 'season-summer', months: [4, 5, 6] },
+      { name: '🍂 Autumn — پاییز', cls: 'season-autumn', months: [7, 8, 9] },
+      { name: '❄️ Winter — زمستان', cls: 'season-winter', months: [10, 11, 12] },
+    ];
+    const MONTH_ICONS = ['🌱', '🌷', '🌿', '🌞', '🔥', '🌾', '🍁', '🍂', '🌧️', '❄️', '🌨️', '🌬️'];
+
+    function renderYearPlanner() {
+      const cont = document.getElementById('yearPlannerContent');
+      cont.innerHTML = '';
+      const names = getMonthNames();
+      const [ty, tm, td] = todayJalali();
+
+      SEASON_CONFIGS.forEach(season => {
+        const block = document.createElement('div'); block.className = 'season-block';
+        const hdr = document.createElement('div'); hdr.className = `season-header ${season.cls}`; hdr.textContent = season.name;
+        block.appendChild(hdr);
+        const row = document.createElement('div'); row.className = 'months-row';
+        season.months.forEach(m => {
+          const card = document.createElement('div'); card.className = 'month-card'; card.id = `month-card-${m}`;
+          card.onclick = () => toggleMonth(m);
+          card.innerHTML = `
+        <div class="month-card-header">
+          <span>${MONTH_ICONS[m - 1]} ${names[m - 1]}</span>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="month-num">Month ${m}</span>
+            <span class="toggle-arrow">▼</span>
+          </div>
+        </div>
+        <div class="days-grid" id="days-grid-${m}"></div>
+        <div id="month-tasks-${m}" style="display:none;padding:0 14px 14px;" onclick="event.stopPropagation()">
+          <textarea placeholder="📋 Monthly goals & tasks..." id="mta-${m}"
+            style="width:100%;min-height:80px;border:1px solid #e0e7ff;border-radius:12px;padding:10px;font-family:inherit;font-size:.9rem;resize:vertical;outline:none;margin-top:8px;"
+            onchange="monthlyTasksData['m${m}']=this.value;autoSave();"></textarea>
+        </div>
+      `;
+          row.appendChild(card);
+        });
+        block.appendChild(row);
+        cont.appendChild(block);
+      });
+      initYearPlannerDays();
+    }
+
+    function initYearPlannerDays() {
+      const [ty, tm, td] = todayJalali();
+      for (let m = 1; m <= 12; m++) {
+        const grid = document.getElementById(`days-grid-${m}`);
+        if (!grid) continue;
+        grid.innerHTML = '';
+        const daysCount = m <= 6 ? 31 : m <= 11 ? 30 : 29;
+        for (let d = 1; d <= daysCount; d++) {
+          const btn = document.createElement('button'); btn.className = 'day-btn'; btn.textContent = d;
+          const key = `m${m}d${d}`;
+          if (yearPlanData[key] && Object.values(yearPlanData[key]).some(v => v && v.trim() !== '')) btn.classList.add('has-data');
+          if (m === tm && d === td) btn.classList.add('today-mark');
+          btn.addEventListener('click', e => { e.stopPropagation(); openHoursPanel(m, d); });
+          grid.appendChild(btn);
+        }
+      }
+    }
+
+    function toggleMonth(monthNum) {
+      const card = document.getElementById(`month-card-${monthNum}`);
+      if (!card) return;
+      card.classList.toggle('open');
+      const wrap = document.getElementById(`month-tasks-${monthNum}`);
+      if (wrap) {
+        wrap.style.display = card.classList.contains('open') ? 'block' : 'none';
+        const ta = document.getElementById(`mta-${monthNum}`);
+        if (ta) ta.value = monthlyTasksData[`m${monthNum}`] || '';
+      }
+    }
+
+    function openHoursPanel(month, day) {
+      const key = `m${month}d${day}`;
+      currentPanelKey = key;
+      const names = getMonthNames();
+      document.getElementById('hoursPanelTitle').innerHTML = `📅 ${names[month - 1]} — Day ${day} <span style="font-size:.82rem;opacity:.8">24-Hour Schedule</span>`;
+      const grid = document.getElementById('hoursGrid');
+      grid.innerHTML = '';
+      const savedData = yearPlanData[key] || {};
+      for (let h = 0; h < 24; h++) {
+        const slot = document.createElement('div'); slot.className = 'hour-slot';
+        const val = savedData[`h${h}`] || '';
+        if (val.trim()) slot.classList.add('filled');
+        const hLabel = h < 12 ? (h === 0 ? '12:00 AM' : `${h}:00 AM`) : (h === 12 ? '12:00 PM' : `${h - 12}:00 PM`);
+        slot.innerHTML = `<div class="hour-slot-label">⏰ ${hLabel}</div><input type="text" id="hour-input-${h}" value="${escHtml(val)}" placeholder="Activity / Study / Rest...">`;
+        slot.querySelector('input').addEventListener('input', function () { slot.classList.toggle('filled', this.value.trim() !== ''); });
+        grid.appendChild(slot);
+      }
+      document.getElementById('hoursPanelOverlay').classList.add('open');
+      document.body.style.overflow = 'hidden';
+      // Sync with monthly calendar highlight
+      if (calMode === 'persian') {
+        calViewMonth = month;
+        const [jy] = gregorianToJalali(new Date().getFullYear(), new Date().getMonth() + 1, 1);
+        calViewYear = jy;
+      }
+    }
+
+    function closeHoursPanel(e) {
+      if (e && e.target !== document.getElementById('hoursPanelOverlay')) return;
+      document.getElementById('hoursPanelOverlay').classList.remove('open');
+      document.body.style.overflow = '';
+      currentPanelKey = null;
+    }
+
+    function saveDayHours() {
+      if (!currentPanelKey) return;
+      const data = {};
+      for (let h = 0; h < 24; h++) {
+        const inp = document.getElementById(`hour-input-${h}`);
+        if (inp) data[`h${h}`] = inp.value;
+      }
+      yearPlanData[currentPanelKey] = data;
+      autoSave();
+      refreshDayBtn(currentPanelKey);
+      renderMonthlyCalendar();
+      document.getElementById('hoursPanelOverlay').classList.remove('open');
+      document.body.style.overflow = '';
+      currentPanelKey = null;
+      showSaveStatus();
+    }
+
+    function clearDayData() {
+      if (!currentPanelKey) return;
+      if (!confirm('Clear all hours for this day?')) return;
+      for (let h = 0; h < 24; h++) { const inp = document.getElementById(`hour-input-${h}`); if (inp) inp.value = ''; }
+      document.querySelectorAll('#hoursGrid .hour-slot').forEach(s => s.classList.remove('filled'));
+    }
+
+    function refreshDayBtn(key) {
+      const match = key.match(/^m(\d+)d(\d+)$/);
+      if (!match) return;
+      const m = parseInt(match[1]), d = parseInt(match[2]);
+      const grid = document.getElementById(`days-grid-${m}`);
+      if (!grid) return;
+      const btns = grid.querySelectorAll('.day-btn');
+      if (btns[d - 1]) btns[d - 1].classList.toggle('has-data', yearPlanData[key] && Object.values(yearPlanData[key]).some(v => v && v.trim() !== ''));
+    }
+
+    // =====================================================
+    // CHARTS
+    // =====================================================
+    function updateWeeklyChart() {
+      updateWeeklyBarChart();
+      updateWeeklyPieChart();
+      updateStats();
+    }
+
+    function updateWeeklyBarChart() {
+      const subjects = [], percentages = [];
+      document.querySelectorAll('.percentage-item').forEach(item => {
+        const lbl = item.querySelector('label'); const inp = item.querySelector('input');
+        if (lbl && inp) { subjects.push(lbl.textContent); percentages.push(parseInt(inp.value) || 0); }
+      });
+      const ctx = document.getElementById('weeklyChart').getContext('2d');
+      if (weeklyChart) weeklyChart.destroy();
+      weeklyChart = new Chart(ctx, { type: 'bar', data: { labels: subjects, datasets: [{ label: 'Efficiency %', data: percentages, backgroundColor: 'rgba(102,126,234,.7)', borderColor: '#667eea', borderWidth: 2, borderRadius: 10 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: 'Percentage (%)' } } } } });
+    }
+
+    function updateWeeklyPieChart() {
+      const labels = [], data = [], colors = [];
+      document.querySelectorAll('.percentage-item').forEach((item, i) => {
+        const lbl = item.querySelector('label'); const inp = item.querySelector('input');
+        const v = parseInt(inp?.value) || 0;
+        if (v > 0) { labels.push(lbl.textContent); data.push(v); colors.push(colorPalette[i % colorPalette.length]); }
+      });
+      const ctx = document.getElementById('weeklyPieChart').getContext('2d');
+      if (weeklyPieChart) weeklyPieChart.destroy();
+      weeklyPieChart = new Chart(ctx, { type: 'pie', data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 2, borderColor: 'white' }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { label: c => { const t = data.reduce((a, b) => a + b, 0); return `${c.label}: ${c.raw}% (${t ? ((c.raw / t) * 100).toFixed(1) : 0}%)`; } } } } } });
+    }
+
+    function updateAnalyticsCharts() {
+      // Collect subject task data
+      const subjectNames = [];
+      const subjectTotal = [];
+      const subjectCompleted = [];
+      document.querySelectorAll('.subject-item').forEach(item => {
+        const name = item.dataset.name || 'Unknown';
+        const tasks = item.querySelectorAll('.todo-item');
+        const done = item.querySelectorAll('.todo-item input[type="checkbox"]:checked').length;
+        subjectNames.push(name);
+        subjectTotal.push(tasks.length);
+        subjectCompleted.push(done);
+      });
+      const colors = subjectNames.map((_, i) => colorPalette[i % colorPalette.length]);
+
+      // Chart 1: Total per subject
+      const c1 = document.getElementById('subjectTotalChart');
+      if (c1) {
+        if (subjectTotalChart) subjectTotalChart.destroy();
+        subjectTotalChart = new Chart(c1.getContext('2d'), { type: 'bar', data: { labels: subjectNames, datasets: [{ label: 'Total Tasks', data: subjectTotal, backgroundColor: colors, borderRadius: 8 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } } });
+      }
+      // Chart 2: Completed per subject
+      const c2 = document.getElementById('subjectCompletedChart');
+      if (c2) {
+        if (subjectCompletedChart) subjectCompletedChart.destroy();
+        subjectCompletedChart = new Chart(c2.getContext('2d'), { type: 'bar', data: { labels: subjectNames, datasets: [{ label: 'Completed', data: subjectCompleted, backgroundColor: colors.map(c => c + 'aa'), borderColor: colors, borderWidth: 2, borderRadius: 8 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } } });
+      }
+      // Chart 3: Completion rate %
+      const rates = subjectNames.map((_, i) => subjectTotal[i] > 0 ? Math.round(subjectCompleted[i] / subjectTotal[i] * 100) : 0);
+      const c3 = document.getElementById('subjectRateChart');
+      if (c3) {
+        if (subjectRateChart) subjectRateChart.destroy();
+        subjectRateChart = new Chart(c3.getContext('2d'), { type: 'bar', data: { labels: subjectNames, datasets: [{ label: 'Completion %', data: rates, backgroundColor: 'rgba(40,167,69,.7)', borderColor: '#28a745', borderWidth: 2, borderRadius: 8 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 } } } });
+      }
+      // Chart 4: Distribution pie
+      const c4 = document.getElementById('subjectDistChart');
+      if (c4) {
+        if (subjectDistChart) subjectDistChart.destroy();
+        const nonZero = subjectNames.filter((_, i) => subjectTotal[i] > 0);
+        const nonZeroData = subjectTotal.filter(v => v > 0);
+        const nonZeroColors = colors.filter((_, i) => subjectTotal[i] > 0);
+        if (nonZero.length > 0) {
+          subjectDistChart = new Chart(c4.getContext('2d'), { type: 'pie', data: { labels: nonZero, datasets: [{ data: nonZeroData, backgroundColor: nonZeroColors, borderWidth: 2, borderColor: 'white' }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } } });
+        }
+      }
+
+      // Trend chart
+      const taskCounts = [];
+      for (let i = 0; i < 7; i++) taskCounts.push((dailyData[`day_${i}`] || []).length);
+      const tc = document.getElementById('trendChart');
+      if (tc) {
+        if (trendChart) trendChart.destroy();
+        trendChart = new Chart(tc.getContext('2d'), { type: 'line', data: { labels: DAYS, datasets: [{ label: 'Tasks', data: taskCounts, borderColor: '#667eea', backgroundColor: 'rgba(102,126,234,.1)', tension: .4, fill: true }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } } });
+      }
+
+      // AI Insights
+      const insights = document.getElementById('aiInsights');
+      if (insights && subjectNames.length) {
+        const maxIdx = rates.indexOf(Math.max(...rates));
+        const minIdx = rates.indexOf(Math.min(...rates));
+        const total = subjectTotal.reduce((a, b) => a + b, 0);
+        const done = subjectCompleted.reduce((a, b) => a + b, 0);
+        insights.innerHTML = `
+      <p>• Overall completion: ${total > 0 ? Math.round(done / total * 100) : 0}% (${done}/${total} tasks)</p>
+      ${subjectNames.length > 0 ? `<p>• Highest completion rate: ${subjectNames[maxIdx] || '–'} (${rates[maxIdx] || 0}%)</p>` : ''}
+      ${subjectNames.length > 1 ? `<p>• Needs more attention: ${subjectNames[minIdx] || '–'} (${rates[minIdx] || 0}%)</p>` : ''}
+      <p>• Daily tasks logged this week: ${taskCounts.reduce((a, b) => a + b, 0)}</p>
+    `;
+      }
+
+      // New: study hours charts
+      updateDailyStudyHoursChart();
+      updateMonthlyWeeklyHoursChart();
+    }
+
+    // =====================================================
+    // STUDY HOURS — HELPER FUNCTIONS
+    // =====================================================
+    function parseTimeRange(tr) {
+      if (!tr || !tr.trim()) return 0;
+      const parts = tr.split('–').map(s => s.trim());
+      if (parts.length !== 2) return 0;
+      const parseMin = s => {
+        const m = s.match(/(\d{1,2}):(\d{2})/);
+        if (!m) return -1;
+        return parseInt(m[1]) * 60 + parseInt(m[2]);
+      };
+      const st = parseMin(parts[0]), en = parseMin(parts[1]);
+      if (st < 0 || en < 0) return 0;
+      let diff = en - st;
+      if (diff < 0) diff += 1440;
+      return diff / 60;
+    }
+
+    function formatHours(h) {
+      if (!h || h <= 0) return '0h 0m';
+      const hours = Math.floor(h);
+      const mins = Math.round((h - hours) * 60);
+      if (hours === 0) return `${mins}m`;
+      return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+    }
+
+    function getDailyStudyHoursBySubject(dayIndex) {
+      const tasks = dailyData[`day_${dayIndex}`] || [];
+      const bySubject = {};
+      let total = 0;
+      tasks.forEach(t => {
+        const hrs = parseTimeRange(t.timeRange);
+        if (hrs <= 0) return;
+        const subj = (t.subject && t.subject !== '— No Subject —') ? t.subject : '— General —';
+        if (!bySubject[subj]) bySubject[subj] = 0;
+        bySubject[subj] += hrs;
+        total += hrs;
+      });
+      return { bySubject, total };
+    }
+
+    function renderDailyStudyHours() {
+      const grid = document.getElementById('dailyStudyHoursGrid');
+      const totalEl = document.getElementById('dailyStudyHoursTotal');
+      const lblEl = document.getElementById('dailyStudyHoursDayLabel');
+      if (!grid || !totalEl) return;
+      if (lblEl) lblEl.textContent = DAYS[currentDay] || 'Today';
+      const { bySubject, total } = getDailyStudyHoursBySubject(currentDay);
+      grid.innerHTML = '';
+      const entries = Object.entries(bySubject).filter(([, v]) => v > 0);
+      if (entries.length === 0) {
+        grid.innerHTML = '<div class="study-hours-empty">Add tasks with start &amp; end times to see study hours here</div>';
+      } else {
+        entries.sort((a, b) => b[1] - a[1]).forEach(([subject, hrs], i) => {
+          const row = document.createElement('div');
+          row.className = 'study-hours-row';
+          const dot = colorPalette[i % colorPalette.length];
+          row.innerHTML = `<span class="study-hours-subject"><span style="width:10px;height:10px;border-radius:50%;background:${dot};display:inline-block;"></span>${escHtml(subject)}</span><span class="study-hours-val">${formatHours(hrs)}</span>`;
+          grid.appendChild(row);
+        });
+      }
+      totalEl.textContent = formatHours(total);
+    }
+
+    function getWeeklyStudyHoursBySubject() {
+      const bySubject = {};
+      let total = 0;
+      for (let i = 0; i < 7; i++) {
+        const { bySubject: day } = getDailyStudyHoursBySubject(i);
+        Object.entries(day).forEach(([subject, hrs]) => {
+          if (!bySubject[subject]) bySubject[subject] = 0;
+          bySubject[subject] += hrs;
+          total += hrs;
+        });
+      }
+      return { bySubject, total };
+    }
+
+    function renderWeeklyStudyHours() {
+      const grid = document.getElementById('weeklyStudyHoursGrid');
+      const totalEl = document.getElementById('weeklyStudyHoursTotal');
+      const lblEl = document.getElementById('weeklyStudyHoursRangeLabel');
+      if (!grid || !totalEl) return;
+      if (lblEl) {
+        const el = document.getElementById('weekRangeLabel');
+        if (el) lblEl.textContent = el.textContent;
+      }
+      const { bySubject, total } = getWeeklyStudyHoursBySubject();
+      grid.innerHTML = '';
+      const entries = Object.entries(bySubject).filter(([, v]) => v > 0);
+      if (entries.length === 0) {
+        grid.innerHTML = '<div class="study-hours-empty">No tasks with time ranges recorded this week</div>';
+      } else {
+        entries.sort((a, b) => b[1] - a[1]).forEach(([subject, hrs], i) => {
+          const row = document.createElement('div');
+          row.className = 'study-hours-row';
+          const dot = colorPalette[i % colorPalette.length];
+          row.innerHTML = `<span class="study-hours-subject"><span style="width:10px;height:10px;border-radius:50%;background:${dot};display:inline-block;"></span>${escHtml(subject)}</span><span class="study-hours-val">${formatHours(hrs)}</span>`;
+          grid.appendChild(row);
+        });
+      }
+      totalEl.textContent = formatHours(total);
+    }
+
+    function updateDailyStudyHoursChart() {
+      const dayHours = [];
+      for (let i = 0; i < 7; i++) {
+        const { total } = getDailyStudyHoursBySubject(i);
+        dayHours.push(+total.toFixed(2));
+      }
+      const c = document.getElementById('dailyStudyHoursChart');
+      if (!c) return;
+      if (dailyStudyHoursChart) dailyStudyHoursChart.destroy();
+      dailyStudyHoursChart = new Chart(c.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: DAYS,
+          datasets: [{
+            label: 'Study Hours',
+            data: dayHours,
+            backgroundColor: DAYS.map((_, i) => i === currentDay ? 'rgba(102,126,234,1)' : 'rgba(102,126,234,.55)'),
+            borderColor: '#667eea',
+            borderWidth: 2,
+            borderRadius: 10
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, title: { display: true, text: 'Hours' } } } }
+      });
+    }
+
+    function updateMonthlyWeeklyHoursChart() {
+      const labels = [], hours = [];
+      for (let w = -3; w <= 0; w++) {
+        const off = weekOffset + w;
+        const lbl = w === 0 ? 'This Week' : w === -1 ? 'Last Week' : `${Math.abs(w)} Weeks Ago`;
+        labels.push(lbl);
+        let total = 0;
+        const wData = weekScheduleStore[off];
+        if (off === weekOffset) {
+          for (let i = 0; i < 7; i++) total += getDailyStudyHoursBySubject(i).total;
+        } else if (wData && wData.dailyData) {
+          for (let i = 0; i < 7; i++) {
+            const tasks = wData.dailyData[`day_${i}`] || [];
+            tasks.forEach(t => { total += parseTimeRange(t.timeRange); });
+          }
+        }
+        hours.push(+total.toFixed(2));
+      }
+      const c = document.getElementById('monthlyWeeklyHoursChart');
+      if (!c) return;
+      if (monthlyWeeklyHoursChart) monthlyWeeklyHoursChart.destroy();
+      monthlyWeeklyHoursChart = new Chart(c.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Study Hours',
+            data: hours,
+            backgroundColor: ['rgba(102,126,234,.4)', 'rgba(102,126,234,.6)', 'rgba(102,126,234,.8)', 'rgba(102,126,234,1)'],
+            borderColor: '#667eea',
+            borderWidth: 2,
+            borderRadius: 10
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, title: { display: true, text: 'Hours' } } } }
+      });
+    }
+
+    // =====================================================
+    // WEEK STATE — SAVE / LOAD PER WEEK
+    // =====================================================
+    function collectWeeklyState() {
+      const subjectTasks = {};
+      document.querySelectorAll('.subject-item').forEach(item => {
+        const name = item.dataset.name;
+        const tasks = [];
+        item.querySelectorAll('.todo-item').forEach(t => {
+          tasks.push({ text: t.querySelector('input[type="text"]').value, checked: t.querySelector('input[type="checkbox"]').checked, priority: t.querySelector('select').value });
+        });
+        subjectTasks[name] = tasks;
+      });
+      const percentages = {};
+      document.querySelectorAll('.percentage-item').forEach(item => {
+        const s = item.querySelector('input').dataset.subject;
+        percentages[s] = item.querySelector('input').value;
+      });
+      const goalsWeekly = [];
+      document.querySelectorAll('#goalsListWeekly .goal-item').forEach(g => {
+        goalsWeekly.push({ text: g.querySelector('input[type="text"]').value, checked: g.querySelector('input[type="checkbox"]').checked });
+      });
+      return {
+        scheduleData: getScheduleData(),
+        dailyData: JSON.parse(JSON.stringify(dailyData)),
+        subjectTasks,
+        percentages,
+        notes: {
+          priority: document.getElementById('priorityNote')?.value || '',
+          goal: document.getElementById('goalNote')?.value || '',
+          clinical: document.getElementById('clinicalNote')?.value || ''
+        },
+        goalsWeekly,
+        weeklyGoal: document.getElementById('weeklyGoalInput')?.value || '',
+        monthlyGoal: document.getElementById('monthlyGoalInput')?.value || '',
+        studyTarget: document.getElementById('studyTargetHours')?.value || '40'
+      };
+    }
+
+    function loadWeeklyState(saved) {
+      // Detect old format (just raw schedule data object, no dailyData key)
+      const isOldFormat = saved && typeof saved === 'object' && !saved.hasOwnProperty('scheduleData') && !saved.hasOwnProperty('dailyData');
+
+      // Clear schedule grid
+      document.querySelectorAll('.day-cell input').forEach(inp => { inp.value = ''; });
+
+      if (isOldFormat) {
+        loadScheduleData(saved);
+        dailyData = {};
+      } else {
+        if (saved.scheduleData) loadScheduleData(saved.scheduleData);
+        dailyData = saved.dailyData ? JSON.parse(JSON.stringify(saved.dailyData)) : {};
+      }
+
+      // Subject tasks
+      if (saved.subjectTasks) {
+        document.querySelectorAll('.subject-item').forEach(item => {
+          const name = item.dataset.name;
+          const tasks = saved.subjectTasks[name] || [];
+          const todoList = item.querySelector('.todo-list');
+          if (todoList) {
+            todoList.innerHTML = '';
+            tasks.forEach(t => addTaskItem(todoList, t.text, t.checked, t.priority));
+          }
+        });
+      } else if (!isOldFormat) {
+        document.querySelectorAll('.subject-item .todo-list').forEach(list => { list.innerHTML = ''; });
+      }
+
+      // Percentages
+      if (saved.percentages) {
+        document.querySelectorAll('.percentage-item input').forEach(inp => {
+          const v = saved.percentages[inp.dataset.subject];
+          inp.value = v !== undefined ? v : 0;
+        });
+      } else if (!isOldFormat) {
+        document.querySelectorAll('.percentage-item input').forEach(inp => { inp.value = 0; });
+      }
+
+      // Notes
+      const noteIds = ['priorityNote', 'goalNote', 'clinicalNote'];
+      const noteKeys = ['priority', 'goal', 'clinical'];
+      noteIds.forEach((id, i) => {
+        const el = document.getElementById(id);
+        if (el) el.value = (saved.notes && saved.notes[noteKeys[i]]) ? saved.notes[noteKeys[i]] : '';
+      });
+
+      // Weekly goals
+      const cont = document.getElementById('goalsListWeekly');
+      if (cont) {
+        cont.innerHTML = '';
+        if (saved.goalsWeekly && saved.goalsWeekly.length) {
+          saved.goalsWeekly.forEach(g => addGoalItem(g.text, g.checked, true));
+        }
+      }
+
+      // Goal inputs
+      if (saved.weeklyGoal !== undefined) { const el = document.getElementById('weeklyGoalInput'); if (el) el.value = saved.weeklyGoal; }
+      if (saved.monthlyGoal !== undefined) { const el = document.getElementById('monthlyGoalInput'); if (el) el.value = saved.monthlyGoal; }
+      if (saved.studyTarget !== undefined) { const el = document.getElementById('studyTargetHours'); if (el) el.value = saved.studyTarget; }
+    }
+
+    function updateDailyPieChart() {
+      const labels = [], values = [], colors = [];
+      document.querySelectorAll('#activityInputs .activity-input-item').forEach((item, i) => {
+        const lbl = item.querySelector('label').textContent;
+        const inp = item.querySelector('input');
+        const color = inp.dataset.color || (lbl === 'Sleep' ? '#1a3b5d' : lbl === 'Study' ? '#667eea' : lbl === 'Gym' ? '#dc3545' : lbl === 'Meals' ? '#ffc107' : '#6c757d');
+        const v = parseInt(inp.value) || 0;
+        if (v > 0) { labels.push(lbl); values.push(v); colors.push(color); }
+      });
+      const ctx = document.getElementById('dailyPieChart').getContext('2d');
+      if (dailyPieChart) dailyPieChart.destroy();
+      if (!labels.length) return;
+      dailyPieChart = new Chart(ctx, { type: 'pie', data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: 'white' }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { label: c => { const t = values.reduce((a, b) => a + b, 0); return `${c.label}: ${c.raw}h (${t ? ((c.raw / t) * 100).toFixed(1) : 0}%)`; } } } } } });
+    }
+
+    // =====================================================
+    // ACTIVITY INPUTS
+    // =====================================================
+    function loadCustomActivities() {
+      const cont = document.getElementById('activityInputs'); cont.innerHTML = '';
+      const acts = [{ label: 'Sleep', id: 'sleepHours', val: 8 }, { label: 'Study', id: 'studyHours', val: 6 }, { label: 'Gym', id: 'gymHours', val: 2 }, { label: 'Meals', id: 'mealsHours', val: 2 }, { label: 'Other', id: 'otherHours', val: 6 }];
+      acts.forEach(a => addActivityInput(a.label, a.id, a.val));
+      const key = `day_${currentDay}`;
+      const saved = (customActivities[key] || []);
+      saved.forEach(a => addCustomActivityInput(a.name, a.value, a.color));
+      // Load saved values
+      const savedDay = dailyData[`dayActivities_${currentDay}`] || {};
+      Object.entries(savedDay).forEach(([id, val]) => { const el = document.getElementById(id); if (el) el.value = val; });
+      updateDailyPieChart();
+    }
+
+    function addActivityInput(label, id, defaultValue) {
+      const cont = document.getElementById('activityInputs');
+      const item = document.createElement('div'); item.className = 'activity-input-item';
+      item.innerHTML = `<label>${label}</label><input type="number" id="${id}" min="0" max="24" value="${defaultValue}" onchange="updateDailyPieChart();saveDailyData();"><span style="font-size:.85rem;color:#666;">hrs</span>`;
+      cont.appendChild(item);
+    }
+
+    function addCustomActivityInput(name, value = 1, color = '#6f42c1') {
+      const cont = document.getElementById('activityInputs');
+      const item = document.createElement('div'); item.className = 'activity-input-item'; item.style.borderLeft = `4px solid ${color}`;
+      item.innerHTML = `<label>${escHtml(name)}</label><input type="number" class="custom-activity" data-color="${color}" min="0" max="24" value="${value}" onchange="updateDailyPieChart();saveDailyData();"><span style="font-size:.85rem;color:#666;">hrs</span><span class="delete-activity" onclick="this.closest('.activity-input-item').remove();updateDailyPieChart();saveDailyData();">🗑️</span>`;
+      const addBtn = cont.querySelector('.add-activity-btn');
+      if (addBtn) cont.insertBefore(item, addBtn); else cont.appendChild(item);
+    }
+
+    function addCustomActivity() {
+      const name = prompt('Enter activity name:'); if (!name) return;
+      const key = `day_${currentDay}`;
+      if (!customActivities[key]) customActivities[key] = [];
+      const color = colorPalette[customActivities[key].length % colorPalette.length];
+      customActivities[key].push({ name, value: 1, color });
+      addCustomActivityInput(name, 1, color);
+      updateDailyPieChart(); saveDailyData();
+    }
+
+    // =====================================================
+    // WEEKLY SCHEDULE SAVE/LOAD
+    // =====================================================
+    function getScheduleData() {
+      const data = {};
+      document.querySelectorAll('.day-cell input').forEach(inp => {
+        const h = inp.dataset.hour, d = inp.dataset.day;
+        if (h && d) data[`h${h}d${d}`] = inp.value;
+      });
+      return data;
+    }
+    function loadScheduleData(data) {
+      if (!data) return;
+      document.querySelectorAll('.day-cell input').forEach(inp => {
+        const h = inp.dataset.hour, d = inp.dataset.day;
+        const key = `h${h}d${d}`;
+        if (data[key] !== undefined) inp.value = data[key];
+      });
+    }
+
+    // =====================================================
+    // PERSIST (LocalStorage)
+    // =====================================================
+    const STORE_KEY = 'drHemmatiPlannerV4';
+
+    function autoSave() {
+      try {
+        const d = collectAll();
+        localStorage.setItem(STORE_KEY, JSON.stringify(d));
+      } catch (e) { console.log('AutoSave error:', e); }
+    }
+
+    function manualSave() {
+      autoSave(); showSaveStatus();
+    }
+
+    function collectAll() {
+      // Sync current week's full state to the store before collecting
+      weekScheduleStore[weekOffset] = collectWeeklyState();
+
+      const subjects = [];
+      document.querySelectorAll('.subject-item').forEach(item => {
+        const name = item.dataset.name || '';
+        const tasks = [];
+        item.querySelectorAll('.todo-item').forEach(t => {
+          tasks.push({ text: t.querySelector('input[type="text"]').value, checked: t.querySelector('input[type="checkbox"]').checked, priority: t.querySelector('select').value });
+        });
+        subjects.push({ name, tasks, icon: item.dataset.icon || '📘' });
+      });
+      const percentages = {};
+      document.querySelectorAll('.percentage-item').forEach(item => {
+        const s = item.querySelector('input').dataset.subject;
+        percentages[s] = item.querySelector('input').value;
+      });
+      const goals = [];
+      document.querySelectorAll('#goalsList .goal-item').forEach(g => {
+        goals.push({ text: g.querySelector('input[type="text"]').value, checked: g.querySelector('input[type="checkbox"]').checked });
+      });
+      const goalsWeekly = [];
+      document.querySelectorAll('#goalsListWeekly .goal-item').forEach(g => {
+        goalsWeekly.push({ text: g.querySelector('input[type="text"]').value, checked: g.querySelector('input[type="checkbox"]').checked });
+      });
+      return {
+        subjects, percentages, dailyData, customActivities, yearPlanData, countdowns,
+        notes: { priority: document.getElementById('priorityNote')?.value || '', goal: document.getElementById('goalNote')?.value || '', clinical: document.getElementById('clinicalNote')?.value || '' },
+        goals, goalsWeekly,
+        weeklyGoal: document.getElementById('weeklyGoalInput')?.value || '',
+        monthlyGoal: document.getElementById('monthlyGoalInput')?.value || '',
+        studyTarget: document.getElementById('studyTargetHours')?.value || '40',
+        scheduleData: getScheduleData(),
+        calMode, calViewYear, calViewMonth,
+        currentDay,
+        monthlyTasksData,
+        weekOffset,
+        weekScheduleStore
+      };
+    }
+
+    function loadAll() {
+      try {
+        // First: try to load data embedded inside the HTML file itself (from export)
+        let raw = null;
+        const embeddedEl = document.getElementById('__EMBEDDED_PLANNER_DATA__');
+        if (embeddedEl && embeddedEl.textContent.trim()) {
+          raw = embeddedEl.textContent.trim();
+          // Also write it to localStorage so changes are auto-saved from here on
+          localStorage.setItem(STORE_KEY, raw);
+        } else {
+          // Fallback: load from localStorage (normal session usage)
+          raw = localStorage.getItem(STORE_KEY);
+        }
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        if (d.calMode) { calMode = d.calMode; document.getElementById('btnPersian').classList.toggle('active', calMode === 'persian'); document.getElementById('btnGregorian').classList.toggle('active', calMode === 'gregorian'); }
+        if (d.calViewYear) calViewYear = d.calViewYear;
+        if (d.calViewMonth) calViewMonth = d.calViewMonth;
+        if (typeof d.currentDay === 'number') currentDay = d.currentDay;
+        if (d.subjects && d.subjects.length) {
+          document.getElementById('subjectsList').innerHTML = '';
+          document.getElementById('percentageInputs').innerHTML = '';
+          d.subjects.forEach(s => addSubjectToDOM(s.name, s.tasks || [], s.icon || getSubjectIcon(s.name)));
+        }
+        if (d.percentages) {
+          document.querySelectorAll('.percentage-item input').forEach(inp => {
+            if (d.percentages[inp.dataset.subject] !== undefined) inp.value = d.percentages[inp.dataset.subject];
+          });
+        }
+        if (d.dailyData) dailyData = d.dailyData;
+        if (d.customActivities) customActivities = d.customActivities;
+        if (d.yearPlanData) yearPlanData = d.yearPlanData;
+        if (d.monthlyTasksData) monthlyTasksData = d.monthlyTasksData;
+        if (typeof d.weekOffset === 'number') weekOffset = d.weekOffset;
+        if (d.weekScheduleStore) {
+          weekScheduleStore = d.weekScheduleStore;
+          // If the current week in the store has new-format data, sync dailyData from it
+          const curWeekState = weekScheduleStore[weekOffset];
+          if (curWeekState && curWeekState.dailyData && !d.dailyData) {
+            // dailyData not at top level; use from store
+            // (will be overwritten below if d.dailyData exists)
+          }
+        }
+        if (d.countdowns) countdowns = d.countdowns;
+        if (d.notes) {
+          if (d.notes.priority) document.getElementById('priorityNote').value = d.notes.priority;
+          if (d.notes.goal) document.getElementById('goalNote').value = d.notes.goal;
+          if (d.notes.clinical) document.getElementById('clinicalNote').value = d.notes.clinical;
+        }
+        if (d.goals) { d.goals.forEach(g => addGoalItem(g.text, g.checked, false)); }
+        if (d.goalsWeekly) { d.goalsWeekly.forEach(g => addGoalItem(g.text, g.checked, true)); }
+        if (d.weeklyGoal) { const el = document.getElementById('weeklyGoalInput'); if (el) el.value = d.weeklyGoal; }
+        if (d.monthlyGoal) { const el = document.getElementById('monthlyGoalInput'); if (el) el.value = d.monthlyGoal; }
+        if (d.studyTarget) { const el = document.getElementById('studyTargetHours'); if (el) el.value = d.studyTarget; }
+        if (d.scheduleData) setTimeout(() => loadScheduleData(d.scheduleData), 100);
+        setTimeout(updateWeekLabel, 200);
+        renderCountdowns();
+      } catch (e) { console.log('Load error:', e); }
+    }
+
+    // =====================================================
+    // RESET FUNCTIONS
+    // =====================================================
+    function showResetPanel() {
+      switchTab('daily');
+      const p = document.getElementById('resetPanel');
+      if (p) { p.style.display = p.style.display === 'none' ? 'block' : 'none'; }
+    }
+
+    function resetCurrentDay() {
+      if (!confirm(`Reset all data for ${DAYS[currentDay]}?`)) return;
+      dailyData[`day_${currentDay}`] = [];
+      document.getElementById('dailyTodoList').innerHTML = '';
+      autoSave(); showSaveStatus();
+    }
+
+    function resetCurrentWeek() {
+      if (!confirm('Reset all daily task data for this week?')) return;
+      for (let i = 0; i < 7; i++) dailyData[`day_${i}`] = [];
+      loadDailyTasks(); autoSave(); showSaveStatus();
+    }
+
+    function resetCurrentMonth() {
+      if (!confirm('Reset all Year Planner data for the current Persian month?')) return;
+      for (let d = 1; d <= 31; d++) delete yearPlanData[`m${calViewMonth}d${d}`];
+      initYearPlannerDays(); renderMonthlyCalendar(); autoSave(); showSaveStatus();
+    }
+
+    function factoryReset() {
+      if (!confirm('⚠️ FACTORY RESET: Delete ALL data permanently?')) return;
+      if (!confirm('Are you absolutely sure? This cannot be undone!')) return;
+
+      // 1. پاک کردن کامل localStorage
+      localStorage.clear();
+
+      // 2. ساخت یک فایل HTML تمیز بدون هیچ داده‌ای
+      let html = document.documentElement.outerHTML;
+      // حذف کامل داده‌های embed شده از داخل فایل
+      html = html.replace(/<script id="__EMBEDDED_PLANNER_DATA__"[\s\S]*?<\/script>\s*/g, '');
+
+      // 3. دانلود فایل تمیز (جایگزین فایل قبلی کن)
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = document.title.replace(/[^a-zA-Z0-9_\- ]/g, '') + '.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      alert('✅ فایل تمیز دانلود شد!\n\nاین فایل را جایگزین فایل قبلی کن و دوباره باز کن.\nA clean file was downloaded — replace your old file with it.');
+    }
+    // =====================================================
+    // EXPORT / IMPORT
+    // =====================================================
+    // Save directly to file (one-click save)
+    function saveToFile() {
+      autoSave();
+      const allData = collectAll();
+      const dataJson = JSON.stringify(allData);
+
+      let html = document.documentElement.outerHTML;
+      html = html.replace(/<script id="__EMBEDDED_PLANNER_DATA__"[\s\S]*?<\/script>/g, '');
+      const embedScript = `<script id="__EMBEDDED_PLANNER_DATA__" type="application/json">${dataJson}<\/script>`;
+      html = html.replace(/<\/body>/, embedScript + '\n</body>');
+
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // Keep same filename so it overwrites the old file
+      a.download = document.title.replace(/[^a-zA-Z0-9_\- ]/g, '') + '.html';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showSaveStatus();
+    }
+
+    function exportData() {
+      manualSave();
+      // Collect all current data
+      const allData = collectAll();
+      const dataJson = JSON.stringify(allData);
+
+      // Get current HTML and inject data as an embedded script tag
+      let html = document.documentElement.outerHTML;
+
+      // Remove any previously embedded data script to avoid duplication
+      html = html.replace(/<script id="__EMBEDDED_PLANNER_DATA__"[\s\S]*?<\/script>/g, '');
+
+      // Inject the data script just before </body>
+      const embedScript = `<script id="__EMBEDDED_PLANNER_DATA__" type="application/json">${dataJson}<\/script>`;
+      html = html.replace(/<\/body>/, embedScript + '\n</body>');
+
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Medical_Study_Hub_v4_${new Date().toISOString().split('T')[0]}.html`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function importData() {
+      const input = document.createElement('input'); input.type = 'file'; input.accept = '.json';
+      input.onchange = e => {
+        const file = e.target.files[0]; if (!file) return;
+        const reader = new FileReader();
+        reader.onload = ev => {
+          try { JSON.parse(ev.target.result); localStorage.setItem(STORE_KEY, ev.target.result); alert('Imported!'); location.reload(); }
+          catch (err) { alert('Invalid backup file!'); }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
+    }
+
+    // =====================================================
+    // TAB SWITCHING
+    // =====================================================
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      const tabMap = { weekly: 'weeklyTab', daily: 'dailyTab', analytics: 'analyticsTab', yearplan: 'yearplanTab' };
+      const btnMap = { weekly: 0, daily: 1, analytics: 2, yearplan: 3 };
+      document.getElementById(tabMap[tab]).classList.add('active');
+      document.querySelectorAll('.tab-btn')[btnMap[tab]].classList.add('active');
+      // Redraw charts after tab becomes visible (rAF ensures layout is complete)
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          if (tab === 'analytics') updateAnalyticsCharts();
+          if (tab === 'daily') { updateDayDisplay(); }
+          if (tab === 'yearplan') { renderYearPlanner(); setTimeout(updateYearPlanChart, 150); }
+          if (tab === 'weekly') {
+            renderMonthlyCalendar();
+            updateWeeklyChart();
+            renderWeeklyStudyHours();
+          }
+        }, 50);
+      });
+    }
+
+    // =====================================================
+    // WEEK NAVIGATION
+    // =====================================================
+    function updateWeekLabel() {
+      const el = document.getElementById('weekRangeLabel');
+      if (!el) return;
+      const now = new Date();
+      const todayDow = (now.getDay() + 1) % 7; // Sat=0
+      const satDate = new Date(now);
+      satDate.setDate(now.getDate() - todayDow + weekOffset * 7);
+      const friDate = new Date(satDate);
+      friDate.setDate(satDate.getDate() + 6);
+      if (calMode === 'persian') {
+        const [, jm1, jd1] = gregorianToJalali(satDate.getFullYear(), satDate.getMonth() + 1, satDate.getDate());
+        const [, jm2, jd2] = gregorianToJalali(friDate.getFullYear(), friDate.getMonth() + 1, friDate.getDate());
+        el.textContent = weekOffset === 0 ? `این هفته (${jd1}/${jm1} – ${jd2}/${jm2})` : `${jd1}/${jm1} – ${jd2}/${jm2}`;
+      } else {
+        const opts = { month: 'short', day: 'numeric' };
+        el.textContent = weekOffset === 0
+          ? `This Week (${satDate.toLocaleDateString('en-US', opts)} – ${friDate.toLocaleDateString('en-US', opts)})`
+          : `${satDate.toLocaleDateString('en-US', opts)} – ${friDate.toLocaleDateString('en-US', opts)}`;
+      }
+    }
+
+    function changeWeek(dir) {
+      // Save current week's FULL state (schedule + tasks + notes + goals + percentages)
+      weekScheduleStore[weekOffset] = collectWeeklyState();
+      weekOffset += dir;
+      // Load the new week's full state (or empty defaults)
+      const saved = weekScheduleStore[weekOffset] || {};
+      loadWeeklyState(saved);
+      updateWeekLabel();
+      // Update all dependent UI
+      updateStats();
+      updateProgress();
+      updateGoalStats();
+      renderWeeklyStudyHours();
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          updateWeeklyChart();
+          updateAnalyticsCharts();
+          loadDailyTasks();
+          loadCustomActivities();
+          renderDailyStudyHours();
+        }, 60);
+      });
+      autoSave();
+    }
+
+    // =====================================================
+    // YEAR PLAN CHART
+    // =====================================================
+    let yearPlanChartInst = null;
+    function updateYearPlanChart() {
+      const names = getMonthNames();
+      const counts = [];
+      for (let m = 1; m <= 12; m++) {
+        const dc = m <= 6 ? 31 : m <= 11 ? 30 : 29;
+        let filled = 0;
+        for (let d = 1; d <= dc; d++) {
+          const k = `m${m}d${d}`;
+          if (yearPlanData[k] && Object.values(yearPlanData[k]).some(v => v && v.trim())) filled++;
+        }
+        counts.push(filled);
+      }
+      const canvas = document.getElementById('yearPlanChart');
+      if (!canvas) return;
+      if (yearPlanChartInst) yearPlanChartInst.destroy();
+      yearPlanChartInst = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: names,
+          datasets: [{
+            label: 'Days Planned',
+            data: counts,
+            backgroundColor: 'rgba(102,126,234,0.65)',
+            borderColor: '#667eea',
+            borderWidth: 2,
+            borderRadius: 8
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true, title: { display: true, text: 'Days with Activity' } } }
+        }
+      });
+    }
+
+    // =====================================================
+    // HELPERS
+    // =====================================================
+    function escHtml(str) { if (!str) return ''; return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+    function showSaveStatus() { const s = document.getElementById('saveStatus'); s.classList.add('show'); setTimeout(() => s.classList.remove('show'), 2200); }
+    function debounce(fn, delay) { let t; return function (...args) { clearTimeout(t); t = setTimeout(() => fn.apply(this, args), delay); }; }
+
+    // =====================================================
+    // INIT
+    // =====================================================
+    document.addEventListener('DOMContentLoaded', function () {
+      generateSchedule();
+      updateWeekLabel();
+      defaultSubjects.forEach(s => addSubjectToDOM(s.name));
+      addGoalItem('Complete Anatomy review', false, true);
+      addGoalItem('Study 40 hours this week', false, true);
+      addGoalItem('Practice MCQ questions', false, true);
+
+      // Try to load saved data
+      loadAll();
+
+      renderTodayDisplay();
+      initCalendarView();
+      renderYearPlanner();
+      renderCountdowns();
+
+      // Use requestAnimationFrame to ensure DOM layout is complete before drawing charts
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          updateWeeklyChart();
+          updateDayDisplay();
+          updateAnalyticsCharts();
+          updateProgress();
+          updateStats();
+          renderDailyStudyHours();
+          renderWeeklyStudyHours();
+        }, 300);
+      });
+
+      // Auto-save on input changes
+      document.addEventListener('input', debounce(autoSave, 1000));
+
+      // Calendar mode from storage
+      const savedMode = localStorage.getItem('calMode');
+      if (savedMode && savedMode !== calMode) setCalMode(savedMode);
+
+      // Redraw charts on window resize (important for mobile orientation change)
+      let _resizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(_resizeTimer);
+        _resizeTimer = setTimeout(() => {
+          updateWeeklyChart();
+          updateDailyPieChart();
+          updateAnalyticsCharts();
+          renderDailyStudyHours();
+          renderWeeklyStudyHours();
+        }, 200);
+      });
+    });
+  </script>
+</body>
+
+</html>
