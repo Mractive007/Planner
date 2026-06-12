@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ورود به حساب کاربری</title>
+<style>
+/* ─── Variables ─── */
+:root {
+  --bg-top:      #0A1830;
+  --bg-bot:      #15305E;
+  --cobalt:      #2D7DD2;
+  --sky:         #5BA3F5;
+  --card-bg:     rgba(22,48,88,.55);
+  --card-border: rgba(150,195,255,.14);
+  --text-bright: #EAF2FF;
+  --text-muted:  #8AB0E0;
+  --text-faint:  #6488B8;
+  --halo:        rgba(195,222,255,.40);
+  --halo-dim:    rgba(95,125,185,.18);
+  --success:     #4ADE9E;
+  --error:       #FF8FA0;
+  --ink:         #1F4D8F;
+  --warm:        #FFB199;
+}
+
+/* ─── Reset ─── */
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+html, body { min-height:100%; font-family: 'Segoe UI', Tahoma, Arial, sans-serif; }
+
+/* ─── Page / Background ─── */
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at 30% 20%, #1a3a70 0%, var(--bg-top) 60%),
+              linear-gradient(160deg, var(--bg-top) 0%, var(--bg-bot) 100%);
+  position: relative;
+  overflow: hidden;
+  padding: 2rem 1rem;
+}
+
+/* ─── Stars ─── */
+.stars { position:absolute; inset:0; pointer-events:none; }
+.star {
+  position: absolute;
+  background: #fff;
+  border-radius: 50%;
+  opacity: 0;
+  animation: twinkle var(--d, 4s) var(--delay, 0s) infinite ease-in-out;
+}
+.star:nth-child(1)  { width:2px; height:2px; top:8%;  left:15%; --d:3.5s; --delay:0s; }
+.star:nth-child(2)  { width:1px; height:1px; top:18%; left:72%; --d:4.2s; --delay:0.7s; }
+.star:nth-child(3)  { width:2px; height:2px; top:35%; left:88%; --d:3.8s; --delay:1.3s; }
+.star:nth-child(4)  { width:1px; height:1px; top:55%; left:5%;  --d:5s;   --delay:0.4s; }
+.star:nth-child(5)  { width:2px; height:2px; top:70%; left:42%; --d:3.2s; --delay:1.8s; }
+.star:nth-child(6)  { width:1px; height:1px; top:80%; left:78%; --d:4.5s; --delay:0.9s; }
+.star:nth-child(7)  { width:2px; height:2px; top:12%; left:53%; --d:3.9s; --delay:2.1s; }
+.star:nth-child(8)  { width:1px; height:1px; top:45%; left:30%; --d:4.7s; --delay:0.2s; }
+@keyframes twinkle {
+  0%,100% { opacity:0; transform:scale(1); }
+  50%      { opacity:.8; transform:scale(1.3); }
+}
+
+/* ─── Card ─── */
+.login-card {
+  position: relative;
+  width: 100%;
+  max-width: 390px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 24px;
+  padding: 2.25rem 2rem 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 8px 48px rgba(0,0,0,.45),
+              0 1px 0 rgba(150,195,255,.08) inset;
+}
+
+/* ─── Monkey Wrap ─── */
+.monkey-wrap {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  margin-bottom: 1rem;
+  animation: bob 3.4s ease-in-out infinite;
+}
+@keyframes bob {
+  0%,100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+/* Halo glow */
+.monkey-halo {
+  position: absolute;
+  inset: -22px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, var(--halo) 0%, var(--halo-dim) 55%, transparent 72%);
+  filter: blur(14px);
+  z-index: 0;
+  transition: opacity .5s;
+}
+.monkey-halo.dim { opacity: .4; }
+
+/* ─── Monkey SVG ─── */
+#monkeySvg {
+  position: relative;
+  z-index: 1;
+  width: 120px;
+  height: 120px;
+  overflow: visible;
+}
+
+/* Eye blink */
+.eyelid {
+  transform-box: fill-box;
+  transform-origin: center top;
+  animation: blink 5s ease-in-out infinite;
+}
+@keyframes blink {
+  0%,44%,52%,100% { transform: scaleY(0); }
+  46%,50%          { transform: scaleY(1); }
+}
+
+/* Peeking hands group */
+#handsOverEyes {
+  opacity: 0;
+  transition: opacity .35s ease;
+  transform-box: fill-box;
+  transform-origin: center bottom;
+}
+#eyesOpen {
+  opacity: 1;
+  transition: opacity .35s ease;
+}
+
+/* Peeking state */
+.monkey-wrap.peeking #handsOverEyes { opacity: 1; }
+.monkey-wrap.peeking #eyesOpen      { opacity: 0; }
+/* Typing state */
+.monkey-wrap.typing  #handsOverEyes { opacity: 0; }
+.monkey-wrap.typing  #eyesOpen      { opacity: 1; }
+
+/* ─── Heading ─── */
+.login-title {
+  width: 100%;
+  text-align: center;
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--text-bright);
+  letter-spacing: -.01em;
+  margin-bottom: .35rem;
+}
+.login-subtitle {
+  width: 100%;
+  text-align: center;
+  font-size: .85rem;
+  color: var(--text-muted);
+  margin-bottom: 1.5rem;
+  line-height: 1.5;
+}
+
+/* ─── Field Group ─── */
+.field-group {
+  position: relative;
+  width: 100%;
+  margin-top: 1.5rem;
+}
+.field-group input {
+  width: 100%;
+  padding: 15px 44px;
+  background: rgba(255,255,255,.06);
+  border: 1.5px solid rgba(150,195,255,.18);
+  border-radius: 12px;
+  color: var(--text-bright);
+  font-size: .95rem;
+  font-family: inherit;
+  direction: rtl;
+  outline: none;
+  transition: border-color .25s, box-shadow .25s, background .25s;
+  caret-color: var(--sky);
+}
+.field-group input::placeholder { color: transparent; }
+.field-group input:focus {
+  border-color: var(--sky);
+  background: rgba(255,255,255,.09);
+  box-shadow: 0 0 0 3px rgba(91,163,245,.18);
+}
+.field-group input:focus ~ label,
+.field-group input:not(:placeholder-shown) ~ label {
+  top: -11px;
+  right: 10px;
+  font-size: .72rem;
+  color: var(--sky);
+  background: linear-gradient(to bottom, #162E58 40%, transparent 100%);
+  padding: 0 6px;
+  border-radius: 4px;
+}
+
+/* Floating label */
+.field-group label {
+  position: absolute;
+  top: 50%;
+  right: 44px;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  font-size: .9rem;
+  pointer-events: none;
+  transition: top .2s, right .2s, font-size .2s, color .2s;
+  white-space: nowrap;
+}
+
+/* Field icon */
+.field-icon {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  stroke: var(--text-faint);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+  transition: stroke .25s;
+}
+.field-group input:focus ~ .field-icon { stroke: var(--sky); }
+
+/* Eye toggle button */
+.toggle-pw {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: .55;
+  transition: opacity .2s;
+}
+.toggle-pw:hover { opacity: 1; }
+.eye-icon {
+  width: 18px;
+  height: 18px;
+  stroke: var(--text-muted);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.eye-icon .eye-off { display: none; }
+.toggle-pw.visible .eye-on  { display: none; }
+.toggle-pw.visible .eye-off { display: block; }
+
+/* ─── Extra Row ─── */
+.extra-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 1.25rem;
+}
+.check-label {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: .82rem;
+  user-select: none;
+}
+.check-label input[type="checkbox"] { display: none; }
+.check-box {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--text-faint);
+  border-radius: 5px;
+  background: rgba(255,255,255,.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background .2s, border-color .2s;
+}
+.check-label input:checked ~ .check-box {
+  background: var(--cobalt);
+  border-color: var(--cobalt);
+}
+.check-icon {
+  width: 11px;
+  height: 11px;
+  stroke: #fff;
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.check-label input:checked ~ .check-box .check-icon { opacity: 1; }
+.forgot-link {
+  font-size: .82rem;
+  color: var(--sky);
+  text-decoration: none;
+  opacity: .85;
+  transition: opacity .2s;
+}
+.forgot-link:hover { opacity: 1; text-decoration: underline; }
+
+/* ─── Login Button ─── */
+.login-btn {
+  margin-top: 1.5rem;
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--cobalt) 0%, #1B5FAD 100%);
+  color: #fff;
+  font-size: .98rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: transform .15s, box-shadow .25s, opacity .2s;
+  box-shadow: 0 4px 18px rgba(45,125,210,.35);
+}
+.login-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,.12) 0%, transparent 60%);
+  pointer-events: none;
+}
+.login-btn:hover  { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(45,125,210,.5); }
+.login-btn:active { transform: translateY(0); }
+.login-btn .btn-text   { transition: opacity .2s; }
+.login-btn .btn-spinner {
+  display: none;
+  position: absolute;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+}
+.login-btn.loading .btn-text    { opacity: 0; }
+.login-btn.loading .btn-spinner { display: flex; }
+.spinner-ring {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid rgba(255,255,255,.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .75s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Toast ─── */
+.toast {
+  margin-top: 1rem;
+  width: 100%;
+  padding: 0 14px;
+  height: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  font-size: .85rem;
+  text-align: center;
+  font-weight: 500;
+  opacity: 0;
+  transition: height .3s, padding .3s, opacity .3s;
+}
+.toast.show {
+  height: 40px;
+  padding: 10px 14px;
+  opacity: 1;
+}
+.toast.success { background: rgba(74,222,158,.15); color: var(--success); border: 1px solid rgba(74,222,158,.25); }
+.toast.error   { background: rgba(255,143,160,.12); color: var(--error);   border: 1px solid rgba(255,143,160,.22); }
+
+/* ─── Shake ─── */
+@keyframes shake {
+  0%,100% { transform: translateX(0); }
+  18%      { transform: translateX(-7px); }
+  36%      { transform: translateX(7px); }
+  54%      { transform: translateX(-5px); }
+  72%      { transform: translateX(5px); }
+  90%      { transform: translateX(-2px); }
+}
+.shake { animation: shake .42s ease; }
+
+/* ─── Reduced Motion ─── */
+@media (prefers-reduced-motion: reduce) {
+  .monkey-wrap  { animation: none; }
+  .eyelid       { animation: none; }
+  .star         { animation: none; opacity:.4; }
+  .login-btn    { transition: none; }
+  .field-group input, .field-group label { transition: none; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <!-- Stars -->
+  <div class="stars" aria-hidden="true">
+    <span class="star"></span><span class="star"></span>
+    <span class="star"></span><span class="star"></span>
+    <span class="star"></span><span class="star"></span>
+    <span class="star"></span><span class="star"></span>
+  </div>
+
+  <!-- Card -->
+  <div class="login-card" id="loginCard">
+
+    <!-- Monkey avatar -->
+    <div class="monkey-wrap" id="monkeyWrap">
+      <div class="monkey-halo" id="monkeyHalo"></div>
+
+      <svg id="monkeySvg" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="headGrad" cx="45%" cy="40%" r="58%">
+            <stop offset="0%"   stop-color="#5BA3F5"/>
+            <stop offset="55%"  stop-color="#2D7DD2"/>
+            <stop offset="100%" stop-color="#1F4D8F"/>
+          </radialGradient>
+          <radialGradient id="earGrad" cx="35%" cy="35%" r="65%">
+            <stop offset="0%"   stop-color="#3A7FD4"/>
+            <stop offset="100%" stop-color="#1F4D8F"/>
+          </radialGradient>
+          <radialGradient id="earInner" cx="40%" cy="40%" r="60%">
+            <stop offset="0%"   stop-color="#7FC0FF"/>
+            <stop offset="100%" stop-color="#3A7FD4"/>
+          </radialGradient>
+          <radialGradient id="snoutGrad" cx="40%" cy="30%" r="65%">
+            <stop offset="0%"   stop-color="#7FC0FF"/>
+            <stop offset="100%" stop-color="#3A90E8"/>
+          </radialGradient>
+          <radialGradient id="shineGrad" cx="40%" cy="30%" r="65%">
+            <stop offset="0%"   stop-color="rgba(255,255,255,.55)"/>
+            <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+          </radialGradient>
+          <radialGradient id="eyeballGrad" cx="38%" cy="32%" r="65%">
+            <stop offset="0%"   stop-color="#ffffff"/>
+            <stop offset="100%" stop-color="#d4e8ff"/>
+          </radialGradient>
+          <clipPath id="headClip">
+            <ellipse cx="60" cy="57" rx="34" ry="33"/>
+          </clipPath>
+        </defs>
+
+        <!-- Ears -->
+        <ellipse cx="27" cy="58" rx="10" ry="11" fill="url(#earGrad)"/>
+        <ellipse cx="27" cy="58" rx="6"  ry="7"  fill="url(#earInner)" opacity=".7"/>
+        <ellipse cx="93" cy="58" rx="10" ry="11" fill="url(#earGrad)"/>
+        <ellipse cx="93" cy="58" rx="6"  ry="7"  fill="url(#earInner)" opacity=".7"/>
+
+        <!-- Head -->
+        <ellipse cx="60" cy="57" rx="34" ry="33" fill="url(#headGrad)"/>
+
+        <!-- Head shine -->
+        <ellipse cx="50" cy="43" rx="16" ry="11" fill="url(#shineGrad)" opacity=".55" clip-path="url(#headClip)"/>
+
+        <!-- Snout -->
+        <ellipse cx="60" cy="71" rx="15" ry="10" fill="url(#snoutGrad)" opacity=".85"/>
+
+        <!-- Open eyes group -->
+        <g id="eyesOpen">
+          <!-- Left eye (visual right) -->
+          <ellipse cx="72" cy="54" rx="8" ry="8.5" fill="url(#eyeballGrad)"/>
+          <circle cx="74" cy="55" r="4.5" fill="#1A3A6E"/>
+          <circle cx="74" cy="55" r="2.2" fill="#0D1F40"/>
+          <circle cx="76" cy="53" r="1.3" fill="rgba(255,255,255,.9)"/>
+          <ellipse class="eyelid" cx="72" cy="49.5" rx="8" ry="8.5" fill="#2D7DD2"/>
+
+          <!-- Right eye (visual left) -->
+          <ellipse cx="48" cy="54" rx="8" ry="8.5" fill="url(#eyeballGrad)"/>
+          <circle cx="50" cy="55" r="4.5" fill="#1A3A6E"/>
+          <circle cx="50" cy="55" r="2.2" fill="#0D1F40"/>
+          <circle cx="52" cy="53" r="1.3" fill="rgba(255,255,255,.9)"/>
+          <ellipse class="eyelid" cx="48" cy="49.5" rx="8" ry="8.5" fill="#2D7DD2"/>
+        </g>
+
+        <!-- Nostrils -->
+        <ellipse cx="56" cy="72" rx="2.2" ry="2" fill="#1F4D8F" opacity=".6"/>
+        <ellipse cx="64" cy="72" rx="2.2" ry="2" fill="#1F4D8F" opacity=".6"/>
+
+        <!-- Mouth (happy curve) -->
+        <path d="M52 78 Q60 84 68 78" stroke="#1F4D8F" stroke-width="2" fill="none" stroke-linecap="round" opacity=".65"/>
+
+        <!-- HANDS OVER EYES (peeking) -->
+        <g id="handsOverEyes">
+          <!-- Left hand covering right eye area -->
+          <ellipse cx="73" cy="60" rx="13" ry="10" fill="#2D7DD2"/>
+          <ellipse cx="73" cy="55" rx="11" ry="7"  fill="#3A8EE6"/>
+          <!-- Fingers left -->
+          <rect x="62" y="48" width="6" height="14" rx="3" fill="#2D7DD2"/>
+          <rect x="69" y="46" width="6" height="14" rx="3" fill="#2D7DD2"/>
+          <rect x="76" y="47" width="6" height="13" rx="3" fill="#2D7DD2"/>
+          <!-- Right hand covering left eye area -->
+          <ellipse cx="47" cy="60" rx="13" ry="10" fill="#2D7DD2"/>
+          <ellipse cx="47" cy="55" rx="11" ry="7"  fill="#3A8EE6"/>
+          <!-- Fingers right -->
+          <rect x="36" y="48" width="6" height="14" rx="3" fill="#2D7DD2"/>
+          <rect x="43" y="46" width="6" height="14" rx="3" fill="#2D7DD2"/>
+          <rect x="50" y="47" width="6" height="13" rx="3" fill="#2D7DD2"/>
+          <!-- Peeping eyes above hands -->
+          <ellipse cx="72" cy="49" rx="7" ry="6" fill="url(#eyeballGrad)"/>
+          <circle cx="73" cy="50" r="3.5" fill="#1A3A6E"/>
+          <circle cx="73" cy="50" r="1.8" fill="#0D1F40"/>
+          <circle cx="74.5" cy="48.5" r="1" fill="rgba(255,255,255,.9)"/>
+          <ellipse cx="48" cy="49" rx="7" ry="6" fill="url(#eyeballGrad)"/>
+          <circle cx="49" cy="50" r="3.5" fill="#1A3A6E"/>
+          <circle cx="49" cy="50" r="1.8" fill="#0D1F40"/>
+          <circle cx="50.5" cy="48.5" r="1" fill="rgba(255,255,255,.9)"/>
+        </g>
+      </svg>
+    </div>
+
+    <!-- Heading -->
+    <h1 class="login-title">خوش آمدید</h1>
+    <p class="login-subtitle">برای ادامه، وارد حساب کاربری خود شوید</p>
+
+    <!-- Username field -->
+    <div class="field-group">
+      <svg class="field-icon" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="4"/>
+        <path d="M4 20c0-4.4 3.6-8 8-8s8 3.6 8 8"/>
+      </svg>
+      <input type="text" id="usernameInput" placeholder=" " autocomplete="username" spellcheck="false">
+      <label for="usernameInput">نام کاربری یا ایمیل</label>
+    </div>
+
+    <!-- Password field -->
+    <div class="field-group">
+      <svg class="field-icon" viewBox="0 0 24 24">
+        <rect x="5" y="11" width="14" height="9" rx="2"/>
+        <path d="M8 11V8a4 4 0 0 1 8 0v3"/>
+      </svg>
+      <input type="password" id="passwordInput" placeholder=" " autocomplete="current-password">
+      <label for="passwordInput">رمز عبور</label>
+      <button class="toggle-pw" id="togglePw" type="button" aria-label="نمایش رمز عبور">
+        <svg class="eye-icon" viewBox="0 0 24 24">
+          <g class="eye-on">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </g>
+          <g class="eye-off">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+            <circle cx="12" cy="12" r="3"/>
+            <line x1="3" y1="3" x2="21" y2="21"/>
+          </g>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Remember + Forgot -->
+    <div class="extra-row">
+      <label class="check-label">
+        <input type="checkbox" id="rememberMe">
+        <span class="check-box">
+          <svg class="check-icon" viewBox="0 0 16 16">
+            <path d="M3 8.5L6.5 12L13 4.5"/>
+          </svg>
+        </span>
+        مرا به خاطر بسپار
+      </label>
+      <a href="#" class="forgot-link">فراموشی رمز عبور؟</a>
+    </div>
+
+    <!-- Login Button -->
+    <button class="login-btn" id="loginBtn" type="button">
+      <span class="btn-text">ورود</span>
+      <span class="btn-spinner"><span class="spinner-ring"></span></span>
+    </button>
+
+    <!-- Toast -->
+    <div class="toast" id="toast" role="alert" aria-live="polite"></div>
+
+  </div><!-- /login-card -->
+</div><!-- /page -->
+
+<script>
+const monkeyWrap   = document.getElementById('monkeyWrap');
+const monkeyHalo   = document.getElementById('monkeyHalo');
+const usernameInput = document.getElementById('usernameInput');
+const passwordInput = document.getElementById('passwordInput');
+const togglePw     = document.getElementById('togglePw');
+const loginBtn     = document.getElementById('loginBtn');
+const loginCard    = document.getElementById('loginCard');
+const toast        = document.getElementById('toast');
+
+// ── Password visibility toggle ──────────────────────────────────
+togglePw.addEventListener('click', () => {
+  const isVisible = togglePw.classList.toggle('visible');
+  passwordInput.type = isVisible ? 'text' : 'password';
+  togglePw.setAttribute('aria-label', isVisible ? 'مخفی کردن رمز عبور' : 'نمایش رمز عبور');
+  passwordInput.focus();
+});
+
+// ── Monkey reacts to password focus ────────────────────────────
+passwordInput.addEventListener('focus', () => {
+  monkeyWrap.classList.remove('typing');
+  monkeyWrap.classList.add('peeking');
+  monkeyHalo.classList.add('dim');
+});
+passwordInput.addEventListener('blur', () => {
+  monkeyWrap.classList.remove('peeking');
+  monkeyHalo.classList.remove('dim');
+});
+
+// ── Monkey types when username focused ─────────────────────────
+usernameInput.addEventListener('focus', () => {
+  monkeyWrap.classList.remove('peeking');
+  monkeyWrap.classList.add('typing');
+  monkeyHalo.classList.remove('dim');
+});
+usernameInput.addEventListener('blur', () => {
+  monkeyWrap.classList.remove('typing');
+});
+
+// ── Toast helper ────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg, type) {
+  clearTimeout(toastTimer);
+  toast.textContent = msg;
+  toast.className = 'toast ' + type + ' show';
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 3500);
+}
+
+// ── Simple validation ───────────────────────────────────────────
+const VALID_USER = 'admin';
+const VALID_PASS = '1234';
+
+function handleLogin() {
+  const u = usernameInput.value.trim();
+  const p = passwordInput.value;
+
+  if (!u || !p) {
+    loginCard.classList.remove('shake');
+    requestAnimationFrame(() => loginCard.classList.add('shake'));
+    setTimeout(() => loginCard.classList.remove('shake'), 450);
+    showToast('لطفاً نام کاربری و رمز عبور را وارد کنید.', 'error');
+    return;
+  }
+
+  if (u !== VALID_USER || p !== VALID_PASS) {
+    loginCard.classList.remove('shake');
+    requestAnimationFrame(() => loginCard.classList.add('shake'));
+    setTimeout(() => loginCard.classList.remove('shake'), 450);
+    showToast('نام کاربری یا رمز عبور اشتباه است.', 'error');
+    return;
+  }
+
+  loginBtn.classList.add('loading');
+  loginBtn.disabled = true;
+
+  setTimeout(() => {
+    loginBtn.classList.remove('loading');
+    loginBtn.disabled = false;
+    showToast('خوش آمدید، ' + u + '! 🎉', 'success');
+    monkeyWrap.classList.remove('peeking', 'typing');
+    setTimeout(() => { window.location.href = 'Planner_Final.html'; }, 1200);
+  }, 1200);
+}
+
+loginBtn.addEventListener('click', handleLogin);
+passwordInput.addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin(); });
+usernameInput.addEventListener('keydown', e => { if (e.key === 'Enter') passwordInput.focus(); });
+</script>
+</body>
+</html>
